@@ -18,9 +18,7 @@ class ThermalBrush {
         // Drawing state
         this.isDrawing = false;
         this.lastPos = null;
-        this.smoothedPos = null;  // EMA smoothed position
         this.positionQueue = [];
-        this.rawMousePoints = [];  // Points captured from mouse that show as dots
         this.maxPositionsPerFrame = BrushConfig.performance.maxPositionsPerFrame;
         
         // Create brush
@@ -37,8 +35,6 @@ class ThermalBrush {
         const size = radius * 2 + 1;
         const brush = new Float32Array(size * size);
         const center = radius;
-        const brushType = BrushConfig.brush.type;
-        const falloffPower = BrushConfig.brush.falloffPower;
         
         for (let y = 0; y < size; y++) {
             for (let x = 0; x < size; x++) {
@@ -47,18 +43,7 @@ class ThermalBrush {
                 const distance = Math.sqrt(dx * dx + dy * dy);
                 
                 if (distance <= radius) {
-                    let intensity;
-                    if (brushType === 'gaussian') {
-                        // Gaussian falloff
-                        const sigma = radius / 3;
-                        intensity = Math.exp(-(distance * distance) / (2 * sigma * sigma));
-                    } else {
-                        // Linear falloff
-                        intensity = 1.0 - (distance / radius);
-                    }
-                    
-                    // Apply falloff power for edge sharpness control
-                    intensity = Math.pow(intensity, falloffPower);
+                    const intensity = 1.0 - (distance / radius);
                     brush[y * size + x] = intensity;
                 }
             }
@@ -110,43 +95,15 @@ class ThermalBrush {
     
     startDrawing(e) {
         this.isDrawing = true;
-        const rawPos = this.getEventPos(e);
-        
-        // Initialize smoothed position
-        this.smoothedPos = { x: rawPos.x, y: rawPos.y };
-        
-        // Apply smoothing immediately and add to both arrays
-        const smoothedPos = {
-            x: Math.round(this.smoothedPos.x),
-            y: Math.round(this.smoothedPos.y)
-        };
-        
-        this.lastPos = smoothedPos;
-        this.positionQueue.push(smoothedPos);
-        this.rawMousePoints.push({ x: smoothedPos.x, y: smoothedPos.y, id: Date.now() + Math.random() });
+        const pos = this.getEventPos(e);
+        this.lastPos = pos;
+        this.positionQueue.push(pos);
     }
     
     draw(e) {
         if (!this.isDrawing) return;
         
-        const rawPos = this.getEventPos(e);
-        
-        // Apply exponential moving average for smoothing immediately
-        const alpha = BrushConfig.performance.smoothingFactor;
-        this.smoothedPos = {
-            x: alpha * rawPos.x + (1 - alpha) * this.smoothedPos.x,
-            y: alpha * rawPos.y + (1 - alpha) * this.smoothedPos.y
-        };
-        
-        // Use smoothed position for everything
-        const pos = {
-            x: Math.round(this.smoothedPos.x),
-            y: Math.round(this.smoothedPos.y)
-        };
-        
-        // Add smoothed point to raw mouse points immediately for dot visualization
-        this.rawMousePoints.push({ x: pos.x, y: pos.y, id: Date.now() + Math.random() });
-        
+        const pos = this.getEventPos(e);
         this.addLinePositions(this.lastPos, pos);
         this.lastPos = pos;
     }
@@ -174,15 +131,6 @@ class ThermalBrush {
     applyBrush(x, y) {
         if (x < 0 || x >= this.width || y < 0 || y >= this.height) return;
         
-        // Remove raw mouse points that are within brush radius of this painted position
-        const brushRadius = this.brushRadius;
-        this.rawMousePoints = this.rawMousePoints.filter(point => {
-            const dx = point.x - x;
-            const dy = point.y - y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            return distance > brushRadius; // Keep points outside brush radius
-        });
-        
         const brushSize = this.brushRadius * 2 + 1;
         const startX = Math.max(0, x - this.brushRadius);
         const endX = Math.min(this.width, x + this.brushRadius + 1);
@@ -197,127 +145,122 @@ class ThermalBrush {
                 if (bx >= 0 && bx < brushSize && by >= 0 && by < brushSize) {
                     const brushIndex = by * brushSize + bx;
                     const canvasIndex = cy * this.width + cx;
-                    const heatToAdd = this.brush.data[brushIndex] * this.brushIntensity;
-                    
-                    if (BrushConfig.thermal.heatAccumulation) {
-                        // Accumulate heat
-                        this.thermalData[canvasIndex] = Math.min(
-                            this.thermalData[canvasIndex] + heatToAdd,
-                            BrushConfig.thermal.maxTemperature
-                        );
-                    } else {
-                        // Replace with higher temperature
-                        this.thermalData[canvasIndex] = Math.max(
-                            this.thermalData[canvasIndex],
-                            heatToAdd + BrushConfig.thermal.ambientTemperature
-                        );
-                    }
+                    this.thermalData[canvasIndex] += this.brush.data[brushIndex] * this.brushIntensity;
                 }
             }
         }
         
-        // Center dot with configurable boost
+        // Center dot
         const centerIndex = y * this.width + x;
-        const centerBoost = this.brushIntensity * BrushConfig.brush.centerBoostMultiplier;
-        if (BrushConfig.thermal.heatAccumulation) {
-            this.thermalData[centerIndex] = Math.min(
-                this.thermalData[centerIndex] + centerBoost,
-                BrushConfig.thermal.maxTemperature
-            );
-        } else {
-            this.thermalData[centerIndex] = Math.max(
-                this.thermalData[centerIndex],
-                centerBoost + BrushConfig.thermal.ambientTemperature
-            );
+        this.thermalData[centerIndex] += this.brushIntensity * 2;
+    }
+    
+    // Optimized Gaussian blur with pre-computed kernel and efficient memory access
+    applyGaussianBlur() {
+        if (!this.gaussianKernel) {
+            this.initializeGaussianKernel();
+        }
+        
+        if (!this.tempBuffer) {
+            this.tempBuffer = new Float32Array(this.thermalData.length);
+        }
+        
+        const kernel = this.gaussianKernel;
+        const radius = this.gaussianRadius;
+        const temp = this.tempBuffer;
+        
+        // Horizontal pass - optimized with bounds checking outside inner loop
+        for (let y = 0; y < this.height; y++) {
+            const rowOffset = y * this.width;
+            
+            for (let x = 0; x < this.width; x++) {
+                let sum = 0;
+                const startX = Math.max(0, x - radius);
+                const endX = Math.min(this.width - 1, x + radius);
+                
+                // Use direct array access for better performance
+                for (let nx = startX; nx <= endX; nx++) {
+                    const weight = kernel[nx - x + radius];
+                    sum += this.thermalData[rowOffset + nx] * weight;
+                }
+                
+                temp[rowOffset + x] = sum;
+            }
+        }
+        
+        // Vertical pass - optimized with pre-calculated offsets
+        for (let x = 0; x < this.width; x++) {
+            for (let y = 0; y < this.height; y++) {
+                let sum = 0;
+                const startY = Math.max(0, y - radius);
+                const endY = Math.min(this.height - 1, y + radius);
+                
+                for (let ny = startY; ny <= endY; ny++) {
+                    const weight = kernel[ny - y + radius];
+                    sum += temp[ny * this.width + x] * weight;
+                }
+                
+                this.thermalData[y * this.width + x] = sum;
+            }
         }
     }
     
-    // Optimized separable Gaussian blur
-    applyGaussianBlur() {
-        const sigma = this.blurSigma;
-        const radius = Math.ceil(sigma * 3); // 3-sigma rule for good approximation
-        const temp = new Float32Array(this.thermalData.length);
+    initializeGaussianKernel() {
+        const sigma = BrushConfig.thermal.blurSigma;
+        this.gaussianRadius = Math.min(Math.ceil(sigma * 2.5), 15); // Limit radius for performance
+        const radius = this.gaussianRadius;
         
-        // Pre-calculate Gaussian weights
-        const weights = new Float32Array(radius * 2 + 1);
-        let weightSum = 0;
-        for (let i = 0; i <= radius * 2; i++) {
-            const x = i - radius;
-            weights[i] = Math.exp(-(x * x) / (2 * sigma * sigma));
-            weightSum += weights[i];
-        }
-        // Normalize weights
-        for (let i = 0; i <= radius * 2; i++) {
-            weights[i] /= weightSum;
+        this.gaussianKernel = new Float32Array(radius * 2 + 1);
+        const twoSigmaSquared = 2 * sigma * sigma;
+        let sum = 0;
+        
+        // Calculate kernel weights
+        for (let i = -radius; i <= radius; i++) {
+            const weight = Math.exp(-(i * i) / twoSigmaSquared);
+            this.gaussianKernel[i + radius] = weight;
+            sum += weight;
         }
         
-        // Horizontal pass
-        for (let y = 0; y < this.height; y++) {
-            for (let x = 0; x < this.width; x++) {
-                let sum = 0;
-                
-                for (let i = -radius; i <= radius; i++) {
-                    const nx = x + i;
-                    const clampedX = Math.max(0, Math.min(this.width - 1, nx));
-                    sum += this.thermalData[y * this.width + clampedX] * weights[i + radius];
-                }
-                temp[y * this.width + x] = sum;
-            }
-        }
-        
-        // Vertical pass with cooling
-        const coolingRate = BrushConfig.thermal.coolingRate;
-        for (let y = 0; y < this.height; y++) {
-            for (let x = 0; x < this.width; x++) {
-                let sum = 0;
-                
-                for (let i = -radius; i <= radius; i++) {
-                    const ny = y + i;
-                    const clampedY = Math.max(0, Math.min(this.height - 1, ny));
-                    sum += temp[clampedY * this.width + x] * weights[i + radius];
-                }
-                
-                // Apply cooling rate and ensure minimum ambient temperature
-                let finalValue = sum * coolingRate;
-                this.thermalData[y * this.width + x] = Math.max(finalValue, BrushConfig.thermal.ambientTemperature);
-            }
+        // Normalize kernel to prevent brightness changes
+        for (let i = 0; i < this.gaussianKernel.length; i++) {
+            this.gaussianKernel[i] /= sum;
         }
     }
     
     thermalColormap(value) {
-        // Clamp to 0-1 range
+        // Clamp to 0-1
         value = Math.max(0, Math.min(1, value));
         
-        const colormap = BrushConfig.visual.colormap;
-        
-        // Thermal colormap using configurable colors and transitions
-        if (value < colormap.firstTransition) {
-            const t = value / colormap.firstTransition;
-            const cold = colormap.coldColor;
-            const warm = colormap.warmColor;
+        // Thermal colormap: gray -> red -> orange -> white
+        if (value < BrushConfig.visual.colormap.firstTransition) {
+            const t = value / BrushConfig.visual.colormap.firstTransition;
             return {
-                r: Math.floor(cold.r + (warm.r - cold.r) * t),
-                g: Math.floor(cold.g + (warm.g - cold.g) * t),
-                b: Math.floor(cold.b + (warm.b - cold.b) * t)
+                r: Math.floor(128 + (255 - 128) * t),
+                g: Math.floor(128 * (1 - t)),
+                b: Math.floor(128 * (1 - t))
             };
-        } else if (value < colormap.secondTransition) {
-            const t = (value - colormap.firstTransition) / colormap.firstTransition;
-            const warm = colormap.warmColor;
-            const hot = colormap.hotColor;
+        } else if (value < BrushConfig.visual.colormap.secondTransition) {
+            const t = (value - BrushConfig.visual.colormap.firstTransition) / BrushConfig.visual.colormap.firstTransition;
             return {
-                r: Math.floor(warm.r + (hot.r - warm.r) * t),
-                g: Math.floor(warm.g + (hot.g - warm.g) * t),
-                b: Math.floor(warm.b + (hot.b - warm.b) * t)
+                r: 255,
+                g: Math.floor(128 * t),
+                b: 0
             };
         } else {
-            const t = (value - colormap.secondTransition) / colormap.thirdTransition;
-            const hot = colormap.hotColor;
-            const max = colormap.maxColor;
+            const t = (value - BrushConfig.visual.colormap.secondTransition) / BrushConfig.visual.colormap.thirdTransition;
             return {
-                r: Math.floor(hot.r + (max.r - hot.r) * t),
-                g: Math.floor(hot.g + (max.g - hot.g) * t),
-                b: Math.floor(hot.b + (max.b - hot.b) * t)
+                r: 255,
+                g: Math.floor(128 + 127 * t),
+                b: Math.floor(255 * t)
             };
+        }
+    }
+    
+    updatePersistentMask() {
+        for (let i = 0; i < this.thermalData.length; i++) {
+            if (this.thermalData[i] >= this.threshold) {
+                this.persistentMask[i] = 1;
+            }
         }
     }
     
@@ -341,11 +284,6 @@ class ThermalBrush {
         // Draw contours (simplified for performance)
         this.drawContours();
         
-        // Draw position queue on top layer
-        if (BrushConfig.visual.queue.showQueue) {
-            this.drawPositionQueue();
-        }
-        
         // Update debug info
         this.updateDebugInfo();
     }
@@ -355,9 +293,8 @@ class ThermalBrush {
         this.ctx.lineWidth = BrushConfig.visual.contour.lineWidth;
         
         // Simple contour detection - just draw points above threshold
-        const skipPixels = Math.max(1, BrushConfig.performance.contourSkipPixels);
-        for (let y = 0; y < this.height; y += skipPixels) {
-            for (let x = 0; x < this.width; x += skipPixels) {
+        for (let y = 0; y < this.height; y += BrushConfig.performance.contourSkipPixels) { // Skip pixels for performance
+            for (let x = 0; x < this.width; x += BrushConfig.performance.contourSkipPixels) {
                 const index = y * this.width + x;
                 if (this.thermalData[index] >= this.threshold) {
                     this.ctx.fillStyle = BrushConfig.visual.contour.thresholdColor;
@@ -371,56 +308,17 @@ class ThermalBrush {
         }
     }
     
-    drawPositionQueue() {
-        const queueConfig = BrushConfig.visual.queue;
-        const maxDots = Math.min(this.rawMousePoints.length, queueConfig.maxDotsShown);
-        
-        // Save current context state
-        this.ctx.save();
-        
-        // Set drawing properties
-        this.ctx.fillStyle = queueConfig.dotColor;
-        
-        // Draw dots for captured mouse points that haven't been painted yet
-        for (let i = 0; i < maxDots; i++) {
-            const point = this.rawMousePoints[i];
-            
-            if (queueConfig.fadeEffect) {
-                // Apply fade effect - older points are more transparent
-                const alpha = 1.0 - (i / maxDots) * 0.7; // Fade from 1.0 to 0.3
-                this.ctx.globalAlpha = alpha;
-            }
-            
-            // Draw dot
-            this.ctx.beginPath();
-            this.ctx.arc(point.x, point.y, queueConfig.dotSize, 0, 2 * Math.PI);
-            this.ctx.fill();
-        }
-        
-        // Restore context state
-        this.ctx.restore();
-    }
-    
     updateDebugInfo() {
         const debug = document.getElementById('debug');
         const aboveThreshold = this.thermalData.filter(v => v >= this.threshold).length;
         const persistentArea = this.persistentMask.filter(v => v > 0).length;
         
         debug.innerHTML = `
-            Process Queue: ${this.positionQueue.length}<br>
-            Mouse Points: ${this.rawMousePoints.length}<br>
+            Queue: ${this.positionQueue.length}<br>
             Threshold: ${this.threshold.toFixed(2)}<br>
             Above Threshold: ${aboveThreshold}<br>
             Persistent Area: ${persistentArea}
         `;
-    }
-    
-    updatePersistentMask() {
-        for (let i = 0; i < this.thermalData.length; i++) {
-            if (this.thermalData[i] >= this.threshold) {
-                this.persistentMask[i] = 1;
-            }
-        }
     }
     
     animate() {
