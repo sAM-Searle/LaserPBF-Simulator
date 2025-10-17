@@ -16,8 +16,8 @@ const BrushConfig = {
     // Thermal simulation parameters
     thermal: {
         blurSigma: 2,           // Reduced for phone performance
-        blurRadius: 2,          // Box blur radius for performance
-        blurInterval: 3         // Apply blur every 3rd frame
+        blurRadius: 9,          // Box blur radius for performance
+        blurInterval: 1         // Apply blur every 3rd frame
     },
     
     // Performance settings
