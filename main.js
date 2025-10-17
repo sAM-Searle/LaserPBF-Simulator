@@ -651,9 +651,12 @@ class ThermalBrush {
         const frameTime = this.performanceStats?.frameTime || 0;
         const fps = this.performanceStats?.fps || 0;
         
+        const gpuParticles = (window.bg && window.bg._gpuParticlesEnabled) ? 'On' : 'Off';
+        const particleCount = (window.bg && Array.isArray(window.bg.topLayerCircles)) ? window.bg.topLayerCircles.length : 0;
         debug.innerHTML = `
             <div style="color: ${this.useGPU ? '#4f4' : '#ff4'}; font-weight: bold;">GPU: ${this.useGPU ? 'Accelerated' : 'CPU Mode'}</div>
             <div style="color: #4ff; font-weight: bold;">FPS: ${fps}</div>
+            GPU Particles: ${gpuParticles} (${particleCount})<br>
             Queue: ${this.positionQueue.length}<br>
             Threshold: ${this.threshold.toFixed(2)}<br>
             Above Threshold: ${aboveThreshold}<br>

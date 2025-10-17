@@ -237,6 +237,216 @@ class GPUCompute {
         this.decayProgram = this.createProgram(vertexShader, decayFragShader);
         this.maxTrackingProgram = this.createProgram(vertexShader, maxTrackingFragShader);
         this.persistentProgram = this.createProgram(vertexShader, persistentFragShader);
+
+        // Particle update shaders (X and Y components in separate passes)
+        const particleUpdateXFrag = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
+            precision highp float;
+            uniform sampler2D u_posX;
+            uniform sampler2D u_posY;
+            uniform vec2 u_pushCenter;
+            uniform float u_pushRadius;
+            uniform float u_baseStrength;
+            uniform float u_forceVarMin;
+            uniform float u_forceVarMax;
+            uniform float u_angleVarMax;
+            uniform float u_driftMax;
+            uniform vec2 u_particleResolution; // (width, 1)
+            // Region clamp (circle or rect)
+            uniform float u_regionType; // 0=circle, 1=rect
+            uniform vec2 u_regionCenter;
+            uniform float u_regionR;
+            uniform vec2 u_regionHalfWH;
+            uniform float u_time; // seconds
+            in vec2 v_texCoord;
+            out float outColor;
+
+            float rand(vec2 co) {
+                return fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453);
+            }
+
+            void main(){
+                // Sample current pos
+                vec2 uv = vec2(v_texCoord.x, 0.5);
+                float px = texture(u_posX, uv).r;
+                float py = texture(u_posY, uv).r;
+
+                // Compute push
+                vec2 toCenter = vec2(px, py) - u_pushCenter;
+                float dist = length(toCenter);
+                vec2 pos = vec2(px, py);
+                if (dist > 0.0 && dist < u_pushRadius) {
+                    float pushForce = (u_pushRadius - dist) / u_pushRadius;
+                    float r = rand(vec2(v_texCoord.x, u_time));
+                    float forceVar = mix(u_forceVarMin, u_forceVarMax, r);
+                    float pushDist = pushForce * u_baseStrength * forceVar;
+                    float baseAngle = atan(toCenter.y, toCenter.x);
+                    float angleVar = (r - 0.5) * u_angleVarMax;
+                    float ang = baseAngle + angleVar;
+                    vec2 nd = vec2(cos(ang), sin(ang));
+                    // Drift
+                    float r2 = rand(vec2(v_texCoord.x + 0.37, u_time + 0.91));
+                    float driftAng = r2 * 6.28318530718; // 2*pi
+                    vec2 drift = vec2(cos(driftAng), sin(driftAng)) * (u_driftMax * (r2 - 0.5));
+                    pos += nd * pushDist + drift;
+                }
+
+                // Clamp to region
+                if (u_regionType < 0.5) {
+                    // circle
+                    vec2 d = pos - u_regionCenter;
+                    float rr = u_regionR;
+                    float d2 = dot(d, d);
+                    if (d2 > rr*rr) {
+                        float len = max(1e-6, sqrt(d2));
+                        pos = u_regionCenter + d * (rr / len);
+                    }
+                } else {
+                    // rect
+                    vec2 c = u_regionCenter;
+                    vec2 h = u_regionHalfWH;
+                    pos.x = clamp(pos.x, c.x - h.x, c.x + h.x);
+                    pos.y = clamp(pos.y, c.y - h.y, c.y + h.y);
+                }
+
+                outColor = pos.x; // X component
+            }
+        `);
+
+        const particleUpdateYFrag = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
+            precision highp float;
+            uniform sampler2D u_posX;
+            uniform sampler2D u_posY;
+            uniform vec2 u_pushCenter;
+            uniform float u_pushRadius;
+            uniform float u_baseStrength;
+            uniform float u_forceVarMin;
+            uniform float u_forceVarMax;
+            uniform float u_angleVarMax;
+            uniform float u_driftMax;
+            uniform vec2 u_particleResolution; // (width, 1)
+            // Region clamp (circle or rect)
+            uniform float u_regionType; // 0=circle, 1=rect
+            uniform vec2 u_regionCenter;
+            uniform float u_regionR;
+            uniform vec2 u_regionHalfWH;
+            uniform float u_time; // seconds
+            in vec2 v_texCoord;
+            out float outColor;
+
+            float rand(vec2 co) {
+                return fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453);
+            }
+
+            void main(){
+                // Sample current pos
+                vec2 uv = vec2(v_texCoord.x, 0.5);
+                float px = texture(u_posX, uv).r;
+                float py = texture(u_posY, uv).r;
+
+                // Compute push
+                vec2 toCenter = vec2(px, py) - u_pushCenter;
+                float dist = length(toCenter);
+                vec2 pos = vec2(px, py);
+                if (dist > 0.0 && dist < u_pushRadius) {
+                    float pushForce = (u_pushRadius - dist) / u_pushRadius;
+                    float r = rand(vec2(v_texCoord.x, u_time));
+                    float forceVar = mix(u_forceVarMin, u_forceVarMax, r);
+                    float pushDist = pushForce * u_baseStrength * forceVar;
+                    float baseAngle = atan(toCenter.y, toCenter.x);
+                    float angleVar = (r - 0.5) * u_angleVarMax;
+                    float ang = baseAngle + angleVar;
+                    vec2 nd = vec2(cos(ang), sin(ang));
+                    // Drift
+                    float r2 = rand(vec2(v_texCoord.x + 0.37, u_time + 0.91));
+                    float driftAng = r2 * 6.28318530718;
+                    vec2 drift = vec2(cos(driftAng), sin(driftAng)) * (u_driftMax * (r2 - 0.5));
+                    pos += nd * pushDist + drift;
+                }
+
+                // Clamp to region
+                if (u_regionType < 0.5) {
+                    // circle
+                    vec2 d = pos - u_regionCenter;
+                    float rr = u_regionR;
+                    float d2 = dot(d, d);
+                    if (d2 > rr*rr) {
+                        float len = max(1e-6, sqrt(d2));
+                        pos = u_regionCenter + d * (rr / len);
+                    }
+                } else {
+                    // rect
+                    vec2 c = u_regionCenter;
+                    vec2 h = u_regionHalfWH;
+                    pos.x = clamp(pos.x, c.x - h.x, c.x + h.x);
+                    pos.y = clamp(pos.y, c.y - h.y, c.y + h.y);
+                }
+
+                outColor = pos.y; // Y component
+            }
+        `);
+
+        this.particleUpdateXProgram = this.createProgram(vertexShader, particleUpdateXFrag);
+        this.particleUpdateYProgram = this.createProgram(vertexShader, particleUpdateYFrag);
+
+        // Particle render shaders (point sprites)
+        const particleRenderVert = this.createShader(gl.VERTEX_SHADER, `#version 300 es
+            precision highp float;
+            uniform sampler2D u_posX;
+            uniform sampler2D u_posY;
+            uniform sampler2D u_radius;
+            uniform sampler2D u_gray;
+            uniform vec2 u_resolution; // canvas size in px
+            uniform float u_outerScale;
+            uniform float u_count; // particle count
+            out float v_gray;
+            out float v_radius;
+            void main(){
+                // Map vertex id to 1D texture coordinate
+                float idx = float(gl_VertexID) + 0.5;
+                float u = idx / u_count;
+                vec2 uv = vec2(u, 0.5);
+                float px = texture(u_posX, uv).r;
+                float py = texture(u_posY, uv).r;
+                float r = texture(u_radius, uv).r;
+                float g = texture(u_gray, uv).r;
+                // Convert to NDC (origin top-left)
+                float x_ndc = (px / u_resolution.x) * 2.0 - 1.0;
+                float y_ndc = 1.0 - (py / u_resolution.y) * 2.0;
+                gl_Position = vec4(x_ndc, y_ndc, 0.0, 1.0);
+                gl_PointSize = max(1.0, r * 2.0 * u_outerScale);
+                v_gray = g;
+                v_radius = r;
+            }
+        `);
+
+        const particleRenderFrag = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
+            precision highp float;
+            in float v_gray;
+            in float v_radius;
+            uniform float u_darkScale;
+            uniform float u_highlightOffset; // 0..1, fraction of radius toward top-left
+            out vec4 outColor;
+            void main(){
+                // gl_PointCoord in [0,1]
+                vec2 pc = gl_PointCoord - vec2(0.5);
+                float dist = length(pc);
+                if (dist > 0.5) { discard; }
+                // Simple radial shading with slight highlight toward top-left
+                vec2 hlDir = normalize(vec2(-1.0, -1.0));
+                float hl = dot(normalize(pc + 1e-6), hlDir);
+                float t = smoothstep(0.5, 0.0, dist);
+                float grayCenter = v_gray;
+                float grayEdge = v_gray * u_darkScale;
+                float base = mix(grayEdge, grayCenter, t);
+                base += (u_highlightOffset * 0.15) * max(0.0, hl);
+                base = clamp(base, 0.0, 255.0);
+                vec3 col = vec3(base/255.0);
+                float alpha = 1.0; // could be tuned if needed
+                outColor = vec4(col, alpha);
+            }
+        `);
+
+        this.particleRenderProgram = this.createProgram(particleRenderVert, particleRenderFrag);
         
         // Get uniform locations
         this.setupUniforms();
@@ -286,6 +496,62 @@ class GPUCompute {
             persistentMask: gl.getUniformLocation(this.persistentProgram, 'u_persistentMask'),
             threshold: gl.getUniformLocation(this.persistentProgram, 'u_threshold')
         };
+
+        // Particle uniforms
+        if (this.particleUpdateXProgram && this.particleUpdateYProgram) {
+            gl.useProgram(this.particleUpdateXProgram);
+            this.particleXUniforms = {
+                posX: gl.getUniformLocation(this.particleUpdateXProgram, 'u_posX'),
+                posY: gl.getUniformLocation(this.particleUpdateXProgram, 'u_posY'),
+                pushCenter: gl.getUniformLocation(this.particleUpdateXProgram, 'u_pushCenter'),
+                pushRadius: gl.getUniformLocation(this.particleUpdateXProgram, 'u_pushRadius'),
+                baseStrength: gl.getUniformLocation(this.particleUpdateXProgram, 'u_baseStrength'),
+                forceVarMin: gl.getUniformLocation(this.particleUpdateXProgram, 'u_forceVarMin'),
+                forceVarMax: gl.getUniformLocation(this.particleUpdateXProgram, 'u_forceVarMax'),
+                angleVarMax: gl.getUniformLocation(this.particleUpdateXProgram, 'u_angleVarMax'),
+                driftMax: gl.getUniformLocation(this.particleUpdateXProgram, 'u_driftMax'),
+                particleResolution: gl.getUniformLocation(this.particleUpdateXProgram, 'u_particleResolution'),
+                regionType: gl.getUniformLocation(this.particleUpdateXProgram, 'u_regionType'),
+                regionCenter: gl.getUniformLocation(this.particleUpdateXProgram, 'u_regionCenter'),
+                regionR: gl.getUniformLocation(this.particleUpdateXProgram, 'u_regionR'),
+                regionHalfWH: gl.getUniformLocation(this.particleUpdateXProgram, 'u_regionHalfWH'),
+                time: gl.getUniformLocation(this.particleUpdateXProgram, 'u_time')
+            };
+            gl.useProgram(this.particleUpdateYProgram);
+            this.particleYUniforms = {
+                posX: gl.getUniformLocation(this.particleUpdateYProgram, 'u_posX'),
+                posY: gl.getUniformLocation(this.particleUpdateYProgram, 'u_posY'),
+                pushCenter: gl.getUniformLocation(this.particleUpdateYProgram, 'u_pushCenter'),
+                pushRadius: gl.getUniformLocation(this.particleUpdateYProgram, 'u_pushRadius'),
+                baseStrength: gl.getUniformLocation(this.particleUpdateYProgram, 'u_baseStrength'),
+                forceVarMin: gl.getUniformLocation(this.particleUpdateYProgram, 'u_forceVarMin'),
+                forceVarMax: gl.getUniformLocation(this.particleUpdateYProgram, 'u_forceVarMax'),
+                angleVarMax: gl.getUniformLocation(this.particleUpdateYProgram, 'u_angleVarMax'),
+                driftMax: gl.getUniformLocation(this.particleUpdateYProgram, 'u_driftMax'),
+                particleResolution: gl.getUniformLocation(this.particleUpdateYProgram, 'u_particleResolution'),
+                regionType: gl.getUniformLocation(this.particleUpdateYProgram, 'u_regionType'),
+                regionCenter: gl.getUniformLocation(this.particleUpdateYProgram, 'u_regionCenter'),
+                regionR: gl.getUniformLocation(this.particleUpdateYProgram, 'u_regionR'),
+                regionHalfWH: gl.getUniformLocation(this.particleUpdateYProgram, 'u_regionHalfWH'),
+                time: gl.getUniformLocation(this.particleUpdateYProgram, 'u_time')
+            };
+        }
+
+        // Particle render uniforms
+        if (this.particleRenderProgram) {
+            gl.useProgram(this.particleRenderProgram);
+            this.particleRenderUniforms = {
+                posX: gl.getUniformLocation(this.particleRenderProgram, 'u_posX'),
+                posY: gl.getUniformLocation(this.particleRenderProgram, 'u_posY'),
+                radius: gl.getUniformLocation(this.particleRenderProgram, 'u_radius'),
+                gray: gl.getUniformLocation(this.particleRenderProgram, 'u_gray'),
+                resolution: gl.getUniformLocation(this.particleRenderProgram, 'u_resolution'),
+                outerScale: gl.getUniformLocation(this.particleRenderProgram, 'u_outerScale'),
+                darkScale: gl.getUniformLocation(this.particleRenderProgram, 'u_darkScale'),
+                highlightOffset: gl.getUniformLocation(this.particleRenderProgram, 'u_highlightOffset'),
+                count: gl.getUniformLocation(this.particleRenderProgram, 'u_count')
+            };
+        }
     }
     
     setupGeometry() {
@@ -539,6 +805,204 @@ class GPUCompute {
             gl.clearColor(0, 0, 0, 0);
             gl.clear(gl.COLOR_BUFFER_BIT);
         });
+    }
+
+    // ===== Particle compute API =====
+    initParticles(count, opts = {}) {
+        if (!this.supported) return false;
+        const gl = this.gl;
+        this.particleCount = Math.max(1, count | 0);
+        this.particleTexWidth = this.particleCount;
+        this.particleTexHeight = 1;
+
+        // Create position textures (ping-pong) and FBOs
+        this.pPosX_A = this.createFloatTexture(this.particleTexWidth, this.particleTexHeight);
+        this.pPosX_B = this.createFloatTexture(this.particleTexWidth, this.particleTexHeight);
+        this.pPosY_A = this.createFloatTexture(this.particleTexWidth, this.particleTexHeight);
+        this.pPosY_B = this.createFloatTexture(this.particleTexWidth, this.particleTexHeight);
+        this.pPosX_FbA = this.createFramebuffer(this.pPosX_A);
+        this.pPosX_FbB = this.createFramebuffer(this.pPosX_B);
+        this.pPosY_FbA = this.createFramebuffer(this.pPosY_A);
+        this.pPosY_FbB = this.createFramebuffer(this.pPosY_B);
+
+        // Initialize with provided positions or zeros
+        const initPos = opts.positions instanceof Float32Array ? opts.positions : null;
+        if (initPos && initPos.length >= this.particleCount * 2) {
+            // Pack X and Y separately
+            const xs = new Float32Array(this.particleTexWidth * this.particleTexHeight);
+            const ys = new Float32Array(this.particleTexWidth * this.particleTexHeight);
+            for (let i = 0; i < this.particleCount; i++) {
+                xs[i] = initPos[i * 2];
+                ys[i] = initPos[i * 2 + 1];
+            }
+            gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, xs);
+            gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, ys);
+        } else {
+            // Clear to zeros
+            const zero = new Float32Array(this.particleTexWidth * this.particleTexHeight);
+            gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, zero);
+            gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, zero);
+        }
+
+        // Attributes (radius, gray) - static textures
+        const radii = (opts.radii instanceof Float32Array) ? opts.radii : null;
+        const grays = (opts.grays instanceof Float32Array) ? opts.grays : null;
+        // Create attribute textures (as 1D textures stored in 2D with height=1)
+        this.pRadiusTex = this.createFloatTexture(this.particleTexWidth, 1);
+        this.pGrayTex = this.createFloatTexture(this.particleTexWidth, 1);
+        if (radii && radii.length >= this.particleCount) {
+            gl.bindTexture(gl.TEXTURE_2D, this.pRadiusTex);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, radii);
+        } else {
+            const ones = new Float32Array(this.particleTexWidth); ones.fill(3);
+            gl.bindTexture(gl.TEXTURE_2D, this.pRadiusTex);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, ones);
+        }
+        if (grays && grays.length >= this.particleCount) {
+            gl.bindTexture(gl.TEXTURE_2D, this.pGrayTex);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, grays);
+        } else {
+            const gdef = new Float32Array(this.particleTexWidth); gdef.fill(200);
+            gl.bindTexture(gl.TEXTURE_2D, this.pGrayTex);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, gdef);
+        }
+
+        // Region
+        this.pRegion = {
+            type: (opts.region && opts.region.type === 'rect') ? 1 : 0,
+            cx: (opts.region && opts.region.cx) || (this.width * 0.5),
+            cy: (opts.region && opts.region.cy) || (this.height * 0.5),
+            r: (opts.region && opts.region.r) || (Math.min(this.width, this.height) * 0.35),
+            halfW: (opts.region && opts.region.halfW) || (this.width * 0.3),
+            halfH: (opts.region && opts.region.halfH) || (this.height * 0.3)
+        };
+
+        return true;
+    }
+
+    stepParticles(params) {
+        if (!this.supported || !this.pPosX_A || !this.pPosY_A) return false;
+        const gl = this.gl;
+        const W = this.particleTexWidth;
+        const H = this.particleTexHeight;
+        const timeSec = (params && typeof params.time === 'number') ? params.time : (performance.now() * 0.001);
+
+        // Common uniforms
+        const setCommonUniforms = (isX) => {
+            const prog = isX ? this.particleUpdateXProgram : this.particleUpdateYProgram;
+            const U = isX ? this.particleXUniforms : this.particleYUniforms;
+            gl.useProgram(prog);
+            gl.bindVertexArray(this.vao);
+            gl.uniform1i(U.posX, 0);
+            gl.uniform1i(U.posY, 1);
+            gl.uniform2f(U.pushCenter, params.pushCenter.x, params.pushCenter.y);
+            gl.uniform1f(U.pushRadius, params.pushRadius);
+            gl.uniform1f(U.baseStrength, params.baseStrength);
+            gl.uniform1f(U.forceVarMin, params.forceVarMin);
+            gl.uniform1f(U.forceVarMax, params.forceVarMax);
+            gl.uniform1f(U.angleVarMax, params.angleVarMax);
+            gl.uniform1f(U.driftMax, params.driftMax);
+            gl.uniform2f(U.particleResolution, W, H);
+            gl.uniform1f(U.regionType, this.pRegion.type);
+            gl.uniform2f(U.regionCenter, this.pRegion.cx, this.pRegion.cy);
+            gl.uniform1f(U.regionR, this.pRegion.r);
+            gl.uniform2f(U.regionHalfWH, this.pRegion.halfW, this.pRegion.halfH);
+            gl.uniform1f(U.time, timeSec);
+        };
+
+        // Bind inputs
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
+
+        // Pass X
+        setCommonUniforms(true);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.pPosX_FbB);
+        gl.viewport(0, 0, W, H);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        // Swap X
+        [this.pPosX_A, this.pPosX_B] = [this.pPosX_B, this.pPosX_A];
+        [this.pPosX_FbA, this.pPosX_FbB] = [this.pPosX_FbB, this.pPosX_FbA];
+
+        // Rebind inputs for Y pass (X updated is now in pPosX_A)
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
+
+        // Pass Y
+        setCommonUniforms(false);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.pPosY_FbB);
+        gl.viewport(0, 0, W, H);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        // Swap Y
+        [this.pPosY_A, this.pPosY_B] = [this.pPosY_B, this.pPosY_A];
+        [this.pPosY_FbA, this.pPosY_FbB] = [this.pPosY_FbB, this.pPosY_FbA];
+
+        return true;
+    }
+
+    downloadParticlePositions() {
+        if (!this.supported || !this.pPosX_FbA || !this.pPosY_FbA) return null;
+        const gl = this.gl;
+        const W = this.particleTexWidth;
+        const H = this.particleTexHeight;
+        const xs = new Float32Array(W * H);
+        const ys = new Float32Array(W * H);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.pPosX_FbA);
+        gl.readPixels(0, 0, W, H, gl.RED, gl.FLOAT, xs);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.pPosY_FbA);
+        gl.readPixels(0, 0, W, H, gl.RED, gl.FLOAT, ys);
+        const out = new Float32Array(this.particleCount * 2);
+        for (let i = 0; i < this.particleCount; i++) {
+            out[i * 2] = xs[i];
+            out[i * 2 + 1] = ys[i];
+        }
+        return out;
+    }
+
+    renderParticles(params = {}) {
+        if (!this.supported || !this.pPosX_A || !this.pRadiusTex || !this.particleRenderProgram) return false;
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null); // draw to canvas
+        gl.viewport(0, 0, this.width, this.height);
+        gl.useProgram(this.particleRenderProgram);
+        gl.bindVertexArray(this.vao);
+        gl.disable(gl.DEPTH_TEST);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        // Clear with transparent
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        // Bind textures
+        gl.uniform1i(this.particleRenderUniforms.posX, 0);
+        gl.uniform1i(this.particleRenderUniforms.posY, 1);
+        gl.uniform1i(this.particleRenderUniforms.radius, 2);
+        gl.uniform1i(this.particleRenderUniforms.gray, 3);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.pRadiusTex);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.pGrayTex);
+
+        // Params
+        const outerScale = (params.outerScale != null) ? params.outerScale : 1.3;
+        const darkScale = (params.darkScale != null) ? params.darkScale : 0.3;
+        const highlightOffset = (params.highlightOffset != null) ? params.highlightOffset : 0.3;
+        gl.uniform2f(this.particleRenderUniforms.resolution, this.width, this.height);
+        gl.uniform1f(this.particleRenderUniforms.outerScale, outerScale);
+        gl.uniform1f(this.particleRenderUniforms.darkScale, darkScale);
+        gl.uniform1f(this.particleRenderUniforms.highlightOffset, highlightOffset);
+        gl.uniform1f(this.particleRenderUniforms.count, this.particleCount);
+
+        // Draw N points
+        gl.drawArrays(gl.POINTS, 0, this.particleCount);
+        return true;
     }
 }
 

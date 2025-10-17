@@ -99,10 +99,22 @@ const BrushConfig = {
         showFPS: false,          // Show FPS counter on background canvas
         pushRadius: 35,         // Mouse interaction radius
         bgCircleCount: 20000,    // Number of static background circles
-    topCircleCount: 2000,     // Number of animated top-layer circles
+        topCircleCount: 1000,     // Number of animated top-layer circles
         baseColor: '#363636ff',  // Base fill color for background
         // Interaction mode: 'thermalBrush' routes mouse moves to ThermalBrush.apply via queue; 'circles' keeps original circle-push interaction
         interactionMode: 'thermalBrush',
+        // Use GPU for animating top-layer particles (if available)
+        useGpuParticles: true,
+        // How often to sync GPU particle positions back for CPU drawing (frames)
+        gpuParticleSyncInterval: 1,
+        // Prerendered sprite settings for top-layer circles
+        sprites: {
+            enabled: true,
+            radiusStep: 0.5,   // quantize radius to reduce cache size
+            grayStep: 5        // quantize gray to reduce cache size
+        },
+        // Fully GPU-rendered top-layer (point sprites). Overrides sprite path when on.
+        renderTopOnGPU: false,
         // Visual controls for background rendering
         visual: {
             // Static (baked) circle layer

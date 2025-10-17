@@ -86,6 +86,11 @@
   this._contourCanvas.height = this.height;
   this._contourCtx = this._contourCanvas.getContext('2d');
 
+  // Sprite caches for prerendered top-layer circles
+  this._spritesCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.background?.sprites) ? BrushConfig.background.sprites : { enabled: true, radiusStep: 0.5, grayStep: 5 };
+  this._spriteCacheTopShadow = new Map(); // key: radiusQ|outerScale|shadow params
+  this._spriteCacheTopMain = new Map();   // key: radiusQ|grayQ|darkScale|hl
+
       // FPS
       this._fps = 0;
       this._frameCount = 0;
@@ -95,6 +100,15 @@
       // Init
       this._attachMouse();
       this._initTopLayer();
+      // Optional GPU particle path (deferred init because GPUCompute loads after background)
+      this._gpuParticlesDesired = !!(BrushConfig?.background?.useGpuParticles);
+      this._gpuParticlesEnabled = false;
+      this._gpuParticleSyncInterval = Math.max(1, BrushConfig?.background?.gpuParticleSyncInterval || 2);
+      this._gpuParticleFrame = 0;
+  this._renderTopOnGPU = !!(BrushConfig?.background?.renderTopOnGPU);
+  // Offscreen canvas to hold GPU-rendered particles (we'll draw GPU canvas directly)
+  this._gpuCanvasLayer = null;
+      // Defer actual init to _tryInitGpuParticles
       this._drawBackground(); // prerender static BG into ImageData
 
       if (this.shouldAnimate) this.start();
@@ -117,7 +131,7 @@
       }
     }
 
-    resize(width, height) {
+  resize(width, height) {
       if (width === this.width && height === this.height) return;
       this.stop();
       this.canvas.width = width;
@@ -127,6 +141,9 @@
       // Rebuild
       this.topLayerCircles = [];
       this._initTopLayer();
+      // Clear sprite caches (radius/gray potentially different now)
+      if (this._spriteCacheTopShadow) this._spriteCacheTopShadow.clear();
+      if (this._spriteCacheTopMain) this._spriteCacheTopMain.clear();
       this._drawBackground();
       if (this.shouldAnimate) this.start();
     }
@@ -243,37 +260,131 @@
 
     _drawTopLayer() {
       const ctx = this.ctx;
-      this.topLayerCircles.forEach(circle => {
-        // Shadow
-  const sOff = this.vTop.shadowOffset ?? 5;
-  const sIn = this.vTop.shadowAlphaInner ?? 0.6;
-  const sOut = this.vTop.shadowAlphaOuter ?? 0.1;
-  const shadowGradient = ctx.createRadialGradient(circle.x + sOff, circle.y + sOff, 0, circle.x + sOff, circle.y + sOff, circle.outerRadius);
-  shadowGradient.addColorStop(0, `rgba(0, 0, 0, ${sIn})`);
-  shadowGradient.addColorStop(1, `rgba(0, 0, 0, ${sOut})`);
-        ctx.beginPath();
-  ctx.arc(circle.x - sOff, circle.y - sOff, circle.outerRadius, 0, Math.PI * 2);
-        ctx.fillStyle = shadowGradient;
-        ctx.fill();
+      const sOff = this.vTop.shadowOffset ?? 5;
+      const sIn = this.vTop.shadowAlphaInner ?? 0.6;
+      const sOut = this.vTop.shadowAlphaOuter ?? 0.1;
+      const hl = this.vTop.highlightOffsetScale ?? 0.3;
+      const darkScale = this.vTop.mainDarkScale ?? 0.3;
+      const outerScale = this.vTop.outerScale ?? 1.3;
+      const useSprites = !!(this._spritesCfg && this._spritesCfg.enabled);
+      const rStep = Math.max(0.1, this._spritesCfg?.radiusStep ?? 0.5);
+      const gStep = Math.max(1, this._spritesCfg?.grayStep ?? 5);
 
-        // Main
-  const hl = this.vTop.highlightOffsetScale ?? 0.3;
-  const lightOffsetX = circle.x - circle.radius * hl;
-  const lightOffsetY = circle.y - circle.radius * hl;
-        const gradient = ctx.createRadialGradient(lightOffsetX, lightOffsetY, 0, circle.x, circle.y, circle.radius);
-  const darkScale = this.vTop.mainDarkScale ?? 0.3;
-  gradient.addColorStop(0, `rgb(${circle.grayValue}, ${circle.grayValue}, ${circle.grayValue})`);
-  gradient.addColorStop(1, `rgb(${Math.floor(circle.grayValue * darkScale)}, ${Math.floor(circle.grayValue * darkScale)}, ${Math.floor(circle.grayValue * darkScale)})`);
-        ctx.beginPath();
-        ctx.arc(circle.x, circle.y, circle.radius, 0, Math.PI * 2);
-        ctx.fillStyle = gradient;
-        ctx.fill();
-      });
+      for (let i = 0; i < this.topLayerCircles.length; i++) {
+        const c = this.topLayerCircles[i];
+        if (useSprites) {
+          // Quantize to reduce cache variants
+          const rQ = Math.max(1, Math.round(c.radius / rStep) * rStep);
+          const gQ = Math.max(0, Math.min(255, Math.round(c.grayValue / gStep) * gStep));
+
+          // Shadow sprite
+          const shadowKey = `${rQ}|${outerScale}|${sOff}|${sIn}|${sOut}`;
+          let shadowSprite = this._spriteCacheTopShadow.get(shadowKey);
+          if (!shadowSprite) {
+            const outerR = rQ * outerScale;
+            const size = Math.ceil(outerR * 2);
+            const cvs = document.createElement('canvas');
+            cvs.width = size; cvs.height = size;
+            const sctx = cvs.getContext('2d');
+            const grad = sctx.createRadialGradient(outerR + sOff, outerR + sOff, 0, outerR + sOff, outerR + sOff, outerR);
+            grad.addColorStop(0, `rgba(0,0,0,${sIn})`);
+            grad.addColorStop(1, `rgba(0,0,0,${sOut})`);
+            sctx.beginPath();
+            sctx.arc(outerR - sOff, outerR - sOff, outerR, 0, Math.PI * 2);
+            sctx.fillStyle = grad;
+            sctx.fill();
+            shadowSprite = { canvas: cvs, size, outerR };
+            this._spriteCacheTopShadow.set(shadowKey, shadowSprite);
+          }
+
+          // Main sprite
+          const mainKey = `${rQ}|${gQ}|${darkScale}|${hl}`;
+          let mainSprite = this._spriteCacheTopMain.get(mainKey);
+          if (!mainSprite) {
+            const r = rQ;
+            const size = Math.ceil(r * 2);
+            const cvs = document.createElement('canvas');
+            cvs.width = size; cvs.height = size;
+            const mctx = cvs.getContext('2d');
+            const lightX = r - r * hl;
+            const lightY = r - r * hl;
+            const grad = mctx.createRadialGradient(lightX, lightY, 0, r, r, r);
+            const dark = Math.floor(gQ * darkScale);
+            grad.addColorStop(0, `rgb(${gQ},${gQ},${gQ})`);
+            grad.addColorStop(1, `rgb(${dark},${dark},${dark})`);
+            mctx.beginPath();
+            mctx.arc(r, r, r, 0, Math.PI * 2);
+            mctx.fillStyle = grad;
+            mctx.fill();
+            mainSprite = { canvas: cvs, size, r };
+            this._spriteCacheTopMain.set(mainKey, mainSprite);
+          }
+
+          // Draw sprites
+          const sx = Math.round(c.x - shadowSprite.outerR);
+          const sy = Math.round(c.y - shadowSprite.outerR);
+          ctx.drawImage(shadowSprite.canvas, sx, sy);
+
+          const mx = Math.round(c.x - mainSprite.r);
+          const my = Math.round(c.y - mainSprite.r);
+          ctx.drawImage(mainSprite.canvas, mx, my);
+        } else {
+          // Fallback: render gradients directly
+          // Shadow
+          const shadowGradient = ctx.createRadialGradient(c.x + sOff, c.y + sOff, 0, c.x + sOff, c.y + sOff, c.outerRadius);
+          shadowGradient.addColorStop(0, `rgba(0, 0, 0, ${sIn})`);
+          shadowGradient.addColorStop(1, `rgba(0, 0, 0, ${sOut})`);
+          ctx.beginPath();
+          ctx.arc(c.x - sOff, c.y - sOff, c.outerRadius, 0, Math.PI * 2);
+          ctx.fillStyle = shadowGradient;
+          ctx.fill();
+
+          // Main
+          const lightOffsetX = c.x - c.radius * hl;
+          const lightOffsetY = c.y - c.radius * hl;
+          const gradient = ctx.createRadialGradient(lightOffsetX, lightOffsetY, 0, c.x, c.y, c.radius);
+          gradient.addColorStop(0, `rgb(${c.grayValue}, ${c.grayValue}, ${c.grayValue})`);
+          const dark = Math.floor(c.grayValue * darkScale);
+          gradient.addColorStop(1, `rgb(${dark}, ${dark}, ${dark})`);
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.radius, 0, Math.PI * 2);
+          ctx.fillStyle = gradient;
+          ctx.fill();
+        }
+      }
     }
 
     _updateCircles() {
       const pushRadius = this.pushRadius;
-        this.topLayerCircles.forEach(circle => {
+      if (this._gpuParticlesEnabled && this._gpu && this._gpu.supported) {
+        // Advance on GPU using current brush/mouse position as push center
+        const params = {
+          pushCenter: { x: this.mouseX, y: this.mouseY },
+          pushRadius: this.pushRadius,
+          baseStrength: this.mcfg.pushStrengthBase ?? 10,
+          forceVarMin: this.mcfg.forceVariationMin ?? 0.2,
+          forceVarMax: this.mcfg.forceVariationMax ?? 1.8,
+          angleVarMax: this.mcfg.angleVariationMaxRad ?? (Math.PI / 1.5),
+          driftMax: this.mcfg.driftMax ?? 4,
+          time: performance.now() * 0.001
+        };
+        try { this._gpu.stepParticles(params); } catch (e) { this._gpuParticlesEnabled = false; }
+
+        // Periodically sync positions back for CPU drawing
+        this._gpuParticleFrame++;
+        if ((this._gpuParticleFrame % this._gpuParticleSyncInterval) === 0) {
+          const pos = this._gpu.downloadParticlePositions();
+          if (pos && pos.length >= this.topLayerCircles.length * 2) {
+            for (let i = 0; i < this.topLayerCircles.length; i++) {
+              this.topLayerCircles[i].x = pos[i * 2];
+              this.topLayerCircles[i].y = pos[i * 2 + 1];
+            }
+          }
+        }
+        return;
+      }
+      // CPU fallback path
+      this.topLayerCircles.forEach(circle => {
         const dx = circle.x - this.mouseX;
         const dy = circle.y - this.mouseY;
         const distance = Math.sqrt(dx * dx + dy * dy);
@@ -336,6 +447,11 @@
         this._lastTime = now;
       }
 
+      // Attempt deferred GPU particle init once GPU becomes available
+      if (!this._gpuParticlesEnabled && this._gpuParticlesDesired) {
+        this._tryInitGpuParticles();
+      }
+
       this._updateCircles();
       this._renderFrame();
     }
@@ -347,7 +463,30 @@
       } else {
         ctx.clearRect(0, 0, this.width, this.height);
       }
-      this._drawTopLayer();
+      if (this._renderTopOnGPU && this._gpuParticlesEnabled && this._gpu && this._gpu.supported) {
+        // Ensure GPU canvas is sized
+        if (!this._gpuCanvasLayer) {
+          this._gpuCanvasLayer = this._gpu.canvas; // reuse GPUCompute's canvas
+          this._gpuCanvasLayer.width = this.width;
+          this._gpuCanvasLayer.height = this.height;
+        }
+        // Render particles directly on GPU canvas
+        try {
+          this._gpu.renderParticles({
+            outerScale: this.vTop.outerScale ?? 1.3,
+            darkScale: this.vTop.mainDarkScale ?? 0.3,
+            highlightOffset: this.vTop.highlightOffsetScale ?? 0.3
+          });
+          // Composite onto background
+          ctx.drawImage(this._gpuCanvasLayer, 0, 0);
+        } catch (e) {
+          console.warn('GPU particle render failed; falling back to CPU draw:', e);
+          this._renderTopOnGPU = false;
+          this._drawTopLayer();
+        }
+      } else {
+        this._drawTopLayer();
+      }
 
       // Draw contour overlay on top of baked circles and top-layer dots
       if (this._contourCanvas) {
@@ -363,6 +502,49 @@
   }
 
   // Add methods on prototype to keep constructor clean
+  CustomBackground.prototype._tryInitGpuParticles = function() {
+    try {
+      if (!this._gpuParticlesDesired) return;
+      if (this._gpuParticlesEnabled) return;
+      if (typeof GPUCompute === 'undefined') return;
+
+      // Reuse app-wide GPUCompute if available; else create local one
+      this._gpu = (window.thermalBrush && window.thermalBrush.gpuCompute && window.thermalBrush.gpuCompute.supported)
+        ? window.thermalBrush.gpuCompute
+        : new GPUCompute(this.width, this.height);
+
+      if (!this._gpu || !this._gpu.supported) return;
+
+      const positions = new Float32Array(this.topLayerCircles.length * 2);
+      for (let i = 0; i < this.topLayerCircles.length; i++) {
+        positions[i * 2] = this.topLayerCircles[i].x;
+        positions[i * 2 + 1] = this.topLayerCircles[i].y;
+      }
+      // Build per-circle radii/gray arrays for GPU render
+      const radii = new Float32Array(this.topLayerCircles.length);
+      const grays = new Float32Array(this.topLayerCircles.length);
+      for (let i = 0; i < this.topLayerCircles.length; i++) {
+        radii[i] = this.topLayerCircles[i].radius;
+        grays[i] = this.topLayerCircles[i].grayValue;
+      }
+
+      this._gpu.initParticles(this.topLayerCircles.length, {
+        positions,
+        radii,
+        grays,
+        region: this._region.kind === 'rect'
+          ? { type: 'rect', cx: this._region.cx, cy: this._region.cy, halfW: this._region.halfW, halfH: this._region.halfH }
+          : { type: 'circle', cx: this._region.cx, cy: this._region.cy, r: this._region.r }
+      });
+
+      this._gpuParticlesEnabled = true;
+      console.log('GPU particles enabled');
+    } catch (e) {
+      console.warn('GPU particles init failed, staying on CPU:', e);
+      this._gpuParticlesEnabled = false;
+    }
+  };
+
   CustomBackground.prototype.updateContourOverlay = function(params) {
     if (!params) return;
     const {
