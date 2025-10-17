@@ -9,7 +9,7 @@ const BrushConfig = {
     // Brush properties
     brush: {
         radius: 5,
-        intensity: 0.1,
+        intensity: 0.3,
         threshold: 0.5
     },
     
