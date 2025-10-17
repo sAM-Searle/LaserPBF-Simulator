@@ -9,7 +9,7 @@ const BrushConfig = {
     // Brush properties
     brush: {
         radius: 5,
-        intensity: 0.5,
+        intensity: 0.1,
         threshold: 0.5
     },
     
@@ -22,8 +22,8 @@ const BrushConfig = {
     
     // Performance settings
     performance: {
-        maxPositionsPerFrame: 20,    // Reduced for phones
-        contourSkipPixels: 2        // Skip pixels for contour rendering
+        maxPositionsPerFrame: 10,    // Reduced for phones
+        contourSkipPixels: 0        // Skip pixels for contour rendering
     },
     
     // Visual appearance
