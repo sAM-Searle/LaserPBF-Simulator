@@ -30,6 +30,12 @@ const BrushConfig = {
         contourSkipPixels: 2        // Skip pixels for contour rendering
     },
     
+    // Smoothing settings
+    smoothing: {
+        alpha: 0.8,  // 0..1, higher = smoother but laggier
+        useBresenham: true  // Use Bresenham's line algorithm for precise line drawing
+    },
+    
     // Visual appearance
     visual: {
         // Thermal colormap thresholds
@@ -51,7 +57,7 @@ const BrushConfig = {
         laser: {
             radius: 1,
             color: '#00ff00',  // Bright green
-            alpha: 0.8
+            alpha: 0.1
         }
     },
     

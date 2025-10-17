@@ -24,6 +24,10 @@ class ThermalBrush {
         // Frame counter for timing
         this.frameCounter = 0;
         
+        // Smoothing properties
+        this.smoothAlpha = BrushConfig.smoothing.alpha;
+        this.prevSmooth = null;
+        
         // Create brush
         this.brush = this.createFeatheredBrush(this.brushRadius);
         
@@ -116,17 +120,88 @@ class ThermalBrush {
     }
     
     addLinePositions(start, end) {
+        if (BrushConfig.smoothing.useBresenham) {
+            this.addLinePositionsBresenham(start, end);
+        } else {
+            this.addLinePositionsLinear(start, end);
+        }
+    }
+    
+    addLinePositionsBresenham(start, end) {
+        let x0 = Math.floor(start.x);
+        let y0 = Math.floor(start.y);
+        let x1 = Math.floor(end.x);
+        let y1 = Math.floor(end.y);
+        
+        const dx = Math.abs(x1 - x0);
+        const dy = Math.abs(y1 - y0);
+        const sx = x0 < x1 ? 1 : -1;
+        const sy = y0 < y1 ? 1 : -1;
+        let err = dx - dy;
+        
+        while (true) {
+            // Apply EMA smoothing
+            let smoothedPos;
+            if (!this.prevSmooth) {
+                smoothedPos = { x: x0, y: y0 };
+                this.prevSmooth = smoothedPos;
+            } else {
+                const a = this.smoothAlpha;
+                smoothedPos = {
+                    x: Math.round(a * x0 + (1 - a) * this.prevSmooth.x),
+                    y: Math.round(a * y0 + (1 - a) * this.prevSmooth.y)
+                };
+                this.prevSmooth = smoothedPos;
+            }
+            
+            // Only add if position is different from the last one in queue
+            const lastPos = this.positionQueue[this.positionQueue.length - 1];
+            if (!lastPos || lastPos.x !== smoothedPos.x || lastPos.y !== smoothedPos.y) {
+                this.positionQueue.push({ x: smoothedPos.x, y: smoothedPos.y });
+            }
+            
+            // Check if we've reached the end point
+            if (x0 === x1 && y0 === y1) break;
+            
+            const e2 = 2 * err;
+            if (e2 > -dy) {
+                err -= dy;
+                x0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+    
+    addLinePositionsLinear(start, end) {
         const dx = end.x - start.x;
         const dy = end.y - start.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance > 0) {
-            const steps = Math.max(1, Math.ceil(distance));
-            for (let i = 0; i <= steps; i++) {
-                const t = i / steps;
-                const x = Math.floor(start.x + dx * t);
-                const y = Math.floor(start.y + dy * t);
-                this.positionQueue.push({ x, y });
+        if (distance <= 0) return;
+
+        const steps = Math.max(1, Math.ceil(distance));
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = Math.floor(start.x + dx * t);
+            const y = Math.floor(start.y + dy * t);
+
+            // EMA smoothing
+            if (!this.prevSmooth) {
+                this.prevSmooth = { x, y };
+            } else {
+                const a = this.smoothAlpha;
+                this.prevSmooth = {
+                    x: Math.round(a * x + (1 - a) * this.prevSmooth.x),
+                    y: Math.round(a * y + (1 - a) * this.prevSmooth.y),
+                };
+            }
+
+            // Only add if position is different from the last one in queue
+            const lastPos = this.positionQueue[this.positionQueue.length - 1];
+            if (!lastPos || lastPos.x !== this.prevSmooth.x || lastPos.y !== this.prevSmooth.y) {
+                this.positionQueue.push({ x: this.prevSmooth.x, y: this.prevSmooth.y });
             }
         }
     }
