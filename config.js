@@ -8,19 +8,19 @@ const BrushConfig = {
     
     // Brush properties
     brush: {
-        radius: 5,
-        intensity: 0.5,
-        threshold: 0.8
+        radius: 21,
+        intensity: 0.08,
+        threshold: 0.95
     },
     
     // Thermal simulation parameters
     thermal: {
         blurSigma: 2,           // Reduced for phone performance
-        blurRadius: 9,          // Box blur radius for performance
+        blurRadius: 16,          // Box blur radius for performance
         blurInterval: 3,        // Apply blur every 3rd frame
         sigmaMultiplier: 2.5,   // Multiplier for calculating gaussian radius
         maxGaussianRadius: 15,  // Maximum gaussian radius for performance
-        decayRate: 0.995,       // Thermal decay rate per frame
+        decayRate: 0.9,       // Thermal decay rate per frame
         centerMultiplier: 1     // Center point intensity multiplier
     },
     
@@ -53,8 +53,8 @@ const BrushConfig = {
         // Thermal colormap thresholds
         colormap: {
             firstTransition: 0.33,   // Gray to red transition
-            secondTransition: 0.99,  // Red to orange transition
-            thirdTransition: 0.01   // Orange to white transition (remaining)
+            secondTransition: 0.80,   // Red to orange transition (increased to eliminate white)
+            thirdTransition: 0.95  // Orange to white transition (remaining) - now unused
         },
         
         // Contour rendering
@@ -70,7 +70,7 @@ const BrushConfig = {
             // Grayscale mapping controls for both modes when set to 'grayscale'
             grayGamma: 1,          // non-linear contrast for grayscale mapping
             grayMin: 0,              // minimum gray value (0..255)
-            grayMax: 255,            // maximum gray value (0..255)
+            grayMax: 150,            // maximum gray value (0..255)
             // Optional ceiling for normalization of max temperature values
             // If > 0, normalization uses min(observedMax, grayMaxCeiling)
             grayMaxCeiling: 4

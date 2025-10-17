@@ -4,14 +4,14 @@
     <title>Thermal Brush Simulator</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-    body { margin: 0; padding: 0; background: rgb(0, 0, 0); overflow: hidden; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-    #stage { position: relative; width: fit-content; height: fit-content; }
+        body { margin: 0; padding: 0; background: rgb(0, 0, 0); overflow: hidden; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        #stage { position: relative; width: fit-content; height: fit-content; transform-origin: center; }
         canvas { display: block; touch-action: none; }
         #bgCanvas { position: absolute; top: 0; left: 0; z-index: 0; }
         #canvas { position: absolute; top: 0; left: 0; z-index: 1; }
         #debug { position: absolute; top: 10px; left: 10px; color: white; font-family: monospace; z-index: 2; }
-    #freezeBtn { position: absolute; top: 10px; right: 10px; z-index: 4; padding: 6px 10px; border: 1px solid #777; background: #222; color: #fff; border-radius: 4px; cursor: pointer; }
-    #freezeBtn:hover { background: #333; }
+        #freezeBtn { position: absolute; top: 10px; right: 10px; z-index: 4; padding: 6px 10px; border: 1px solid #777; background: #222; color: #fff; border-radius: 4px; cursor: pointer; }
+        #freezeBtn:hover { background: #333; }
     </style>
 </head>
 <body>
@@ -23,15 +23,32 @@
     </div>
     <script src="config.js"></script>
     <script>
-        // Set canvas dimensions from config and keep canvases stacked the same size
+        // Responsive scaling: keep canvases at fixed size, scale the stage to fit viewport
         const bgCanvas = document.getElementById('bgCanvas');
         const canvas = document.getElementById('canvas');
         const stage = document.getElementById('stage');
+        // Set fixed canvas sizes from config
         bgCanvas.width = canvas.width = BrushConfig.canvas.width;
         bgCanvas.height = canvas.height = BrushConfig.canvas.height;
-        // Absolutely positioned canvases don't size the parent; set stage size explicitly for proper centering
         stage.style.width = BrushConfig.canvas.width + 'px';
         stage.style.height = BrushConfig.canvas.height + 'px';
+        
+        function scaleStageToFit() {
+            const w = BrushConfig.canvas.width;
+            const h = BrushConfig.canvas.height;
+            const aspect = w / h;
+            let vw = window.innerWidth;
+            let vh = window.innerHeight;
+            let scale = 1;
+            if (vw < w || vh < h) {
+                const scaleX = vw / w;
+                const scaleY = vh / h;
+                scale = Math.min(scaleX, scaleY);
+            }
+            stage.style.transform = `scale(${scale})`;
+        }
+        scaleStageToFit();
+        window.addEventListener('resize', scaleStageToFit);
     </script>
     <script src="background.js"></script>
     <script>

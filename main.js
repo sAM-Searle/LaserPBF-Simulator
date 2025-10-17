@@ -733,6 +733,11 @@ class ThermalBrush {
         // Update persistent mask
         this.updatePersistentMask();
         
+        // Clamp thermal data to 0-1 to prevent overflow
+        for (let i = 0; i < this.thermalData.length; i++) {
+            this.thermalData[i] = Math.max(0, Math.min(1, this.thermalData[i]));
+        }
+        
         // Render
         this.render();
         
