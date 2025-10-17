@@ -295,6 +295,9 @@ class ThermalBrush {
         // Draw contours (simplified for performance)
         this.drawContours();
         
+        // Draw laser positions
+        this.drawLaserPositions();
+        
         // Update debug info
         this.updateDebugInfo();
     }
@@ -332,6 +335,27 @@ class ThermalBrush {
         `;
     }
     
+    drawLaserPositions(){
+        if (this.positionQueue.length === 0) return;
+        
+        this.ctx.save();
+        this.ctx.fillStyle = BrushConfig.visual.laser.color;
+        this.ctx.globalAlpha = BrushConfig.visual.laser.alpha;
+        
+        const radius = BrushConfig.visual.laser.radius;
+        
+        // Draw a dot for each position in the queue
+        for (const pos of this.positionQueue) {
+            this.ctx.beginPath();
+            this.ctx.arc(pos.x, pos.y, radius, 0, 2 * Math.PI);
+            this.ctx.fill();
+        }
+        
+        this.ctx.restore();
+    }
+
+
+
     animate() {
         this.frameCounter++;
         

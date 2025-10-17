@@ -45,6 +45,13 @@ const BrushConfig = {
             lineWidth: 1,
             thresholdColor: 'red',
             persistentColor: 'black'
+        },
+        
+        // Laser position visualization
+        laser: {
+            radius: 1,
+            color: '#00ff00',  // Bright green
+            alpha: 0.8
         }
     },
     
