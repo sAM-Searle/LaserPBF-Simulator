@@ -97,7 +97,7 @@ const BrushConfig = {
         enabled: true,           // Toggle background layer on/off
         animate: true,           // Animate the top layer circles
         showFPS: false,          // Show FPS counter on background canvas
-        pushRadius: 35,         // Mouse interaction radius
+        pushRadius: 45,         // Mouse interaction radius
         bgCircleCount: 20000,    // Number of static background circles
         topCircleCount: 1000,     // Number of animated top-layer circles
         baseColor: '#363636ff',  // Base fill color for background
@@ -139,9 +139,9 @@ const BrushConfig = {
                 grayMax: 300,            // values > 255 are clamped by browser
                 highlightOffsetScale: 0.3,
                 mainDarkScale: 0.3,
-                shadowOffset: 5,
-                shadowAlphaInner: 0.6,
-                shadowAlphaOuter: 0.1
+                shadowOffset: 1,
+                shadowAlphaInner: 1,
+                shadowAlphaOuter: 0.3
             }
         },
         // Motion/interaction controls for top layer
@@ -152,7 +152,8 @@ const BrushConfig = {
             angleVariationMaxRad: 2.09439510239, // ~120deg (pi/1.5) total span +/-60deg
             driftMax: 4,               // max random drift per update (px)
             randomKickChance: 0.1,     // probability of random kick per circle per frame
-            randomKickMax: 15          // max random kick distance (px)
+            randomKickMax: 15,         // max random kick distance (px)
+            deleteChance: 0.05          // probability (0..1) to delete particle instead of moving it
         },
         // Region where top particles are allowed (and spawned)
         // type: 'circle' uses a centered circle with radiusRatio of min(width,height)

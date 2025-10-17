@@ -101,7 +101,7 @@
       this._attachMouse();
       this._initTopLayer();
       // Optional GPU particle path (deferred init because GPUCompute loads after background)
-      this._gpuParticlesDesired = !!(BrushConfig?.background?.useGpuParticles);
+      this._gpuParticlesDesired = !!(BrushConfig?.background?.useGpuParticles) && (this.mcfg.deleteChance ?? 0) === 0;
       this._gpuParticlesEnabled = false;
       this._gpuParticleSyncInterval = Math.max(1, BrushConfig?.background?.gpuParticleSyncInterval || 2);
       this._gpuParticleFrame = 0;
@@ -278,22 +278,23 @@
           const gQ = Math.max(0, Math.min(255, Math.round(c.grayValue / gStep) * gStep));
 
           // Shadow sprite
-          const shadowKey = `${rQ}|${outerScale}|${sOff}|${sIn}|${sOut}`;
+          const shadowKey = `v2|${rQ}|${outerScale}|${sOff}|${sIn}|${sOut}`;
           let shadowSprite = this._spriteCacheTopShadow.get(shadowKey);
           if (!shadowSprite) {
             const outerR = rQ * outerScale;
-            const size = Math.ceil(outerR * 2);
+            const centerOffset = outerR + sOff;
+            const size = Math.ceil(centerOffset * 2);
             const cvs = document.createElement('canvas');
             cvs.width = size; cvs.height = size;
             const sctx = cvs.getContext('2d');
-            const grad = sctx.createRadialGradient(outerR + sOff, outerR + sOff, 0, outerR + sOff, outerR + sOff, outerR);
+            const grad = sctx.createRadialGradient(centerOffset, centerOffset, 0, centerOffset, centerOffset, outerR);
             grad.addColorStop(0, `rgba(0,0,0,${sIn})`);
             grad.addColorStop(1, `rgba(0,0,0,${sOut})`);
             sctx.beginPath();
-            sctx.arc(outerR - sOff, outerR - sOff, outerR, 0, Math.PI * 2);
+            sctx.arc(centerOffset, centerOffset, outerR, 0, Math.PI * 2);
             sctx.fillStyle = grad;
             sctx.fill();
-            shadowSprite = { canvas: cvs, size, outerR };
+            shadowSprite = { canvas: cvs, size, centerOffset };
             this._spriteCacheTopShadow.set(shadowKey, shadowSprite);
           }
 
@@ -321,8 +322,8 @@
           }
 
           // Draw sprites
-          const sx = Math.round(c.x - shadowSprite.outerR);
-          const sy = Math.round(c.y - shadowSprite.outerR);
+          const sx = Math.round(c.x - shadowSprite.centerOffset);
+          const sy = Math.round(c.y - shadowSprite.centerOffset);
           ctx.drawImage(shadowSprite.canvas, sx, sy);
 
           const mx = Math.round(c.x - mainSprite.r);
@@ -384,12 +385,19 @@
         return;
       }
       // CPU fallback path
-      this.topLayerCircles.forEach(circle => {
+      const deleteChance = this.mcfg.deleteChance ?? 0.0;
+      const toRemove = [];
+      this.topLayerCircles.forEach((circle, i) => {
         const dx = circle.x - this.mouseX;
         const dy = circle.y - this.mouseY;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
         if (distance < pushRadius && distance > 0) {
+          if (Math.random() < deleteChance) {
+            toRemove.push(i);
+            return;
+          }
+
           const pushForce = (pushRadius - distance) / pushRadius;
 
           // Randomized push from config
@@ -426,6 +434,10 @@
           circle.y = clamped.y;
         }
       });
+      // Remove deleted particles in reverse order to maintain indices
+      for (let j = toRemove.length - 1; j >= 0; j--) {
+        this.topLayerCircles.splice(toRemove[j], 1);
+      }
     }
 
     // Receive processed brush positions from ThermalBrush
@@ -463,6 +475,13 @@
       } else {
         ctx.clearRect(0, 0, this.width, this.height);
       }
+
+      // Draw contour overlay first
+      if (this._contourCanvas) {
+        ctx.drawImage(this._contourCanvas, 0, 0);
+      }
+
+      // Then draw top layer particles on top of contour
       if (this._renderTopOnGPU && this._gpuParticlesEnabled && this._gpu && this._gpu.supported) {
         // Ensure GPU canvas is sized
         if (!this._gpuCanvasLayer) {
@@ -486,11 +505,6 @@
         }
       } else {
         this._drawTopLayer();
-      }
-
-      // Draw contour overlay on top of baked circles and top-layer dots
-      if (this._contourCanvas) {
-        ctx.drawImage(this._contourCanvas, 0, 0);
       }
 
       if (this.showFPS) {
