@@ -17,7 +17,7 @@ const BrushConfig = {
     thermal: {
         blurSigma: 2,           // Reduced for phone performance
         blurRadius: 9,          // Box blur radius for performance
-        blurInterval: 1,        // Apply blur every 3rd frame
+        blurInterval: 3,        // Apply blur every 3rd frame
         sigmaMultiplier: 2.5,   // Multiplier for calculating gaussian radius
         maxGaussianRadius: 15,  // Maximum gaussian radius for performance
         decayRate: 0.995,       // Thermal decay rate per frame
@@ -26,9 +26,20 @@ const BrushConfig = {
     
     // Performance settings
     performance: {
-        maxPositionsPerFrame: 10,    // Reduced for phones
-        contourSkipPixels: 0,       // Skip pixels for contour rendering
-        contourInterval: 1          // Frames between contour overlay updates
+        maxPositionsPerFrame: 20,    // Reduced for phones
+        contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
+        contourInterval: 1,          // Frames between contour overlay updates (increase to lighten CPU)
+        debugUpdateInterval: 20,     // Update debug info every N frames
+        debugSampleStep: 1,          // Sample every Nth pixel for debug stats to reduce cost
+        
+        // GPU acceleration settings
+        useGPU: true,               // Enable GPU acceleration if available
+        gpuBatchSize: 8,         // Number of brush applications to batch for GPU
+        gpuFallback: true,          // Automatically fallback to CPU if GPU fails
+        gpuSyncInterval: 1,         // Frames between GPU->CPU thermal sync (1=every frame)
+        gpuMaskSyncInterval: 6,     // Frames between GPU->CPU max/persistent syncs
+        pauseBackgroundOnSlowCPU: false, // If true, pause animated background when CPU frames are slow
+        slowCpuFrameMs: 22          // Threshold in ms to consider frame slow (about half refresh @ 60Hz)
     },
     
     // Smoothing settings
@@ -88,7 +99,7 @@ const BrushConfig = {
         showFPS: false,          // Show FPS counter on background canvas
         pushRadius: 35,         // Mouse interaction radius
         bgCircleCount: 20000,    // Number of static background circles
-    topCircleCount: 700,     // Number of animated top-layer circles
+    topCircleCount: 2000,     // Number of animated top-layer circles
         baseColor: '#363636ff',  // Base fill color for background
         // Interaction mode: 'thermalBrush' routes mouse moves to ThermalBrush.apply via queue; 'circles' keeps original circle-push interaction
         interactionMode: 'thermalBrush',

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GPU Performance Test</title>
+    <style>
+        body { 
+            font-family: monospace; 
+            background: #222; 
+            color: #fff; 
+            padding: 20px; 
+        }
+        .test-result { 
+            margin: 10px 0; 
+            padding: 10px; 
+            border-radius: 5px; 
+            background: #333; 
+        }
+        .success { background: #2d5a2d; }
+        .warning { background: #5a5a2d; }
+        button { 
+            padding: 10px 20px; 
+            margin: 10px; 
+            background: #444; 
+            color: white; 
+            border: 1px solid #666; 
+            border-radius: 5px; 
+            cursor: pointer; 
+        }
+        button:hover { background: #555; }
+    </style>
+</head>
+<body>
+    <h1>GPU Performance Test</h1>
+    <p>This test compares CPU vs GPU thermal simulation performance.</p>
+    
+    <div id="status">Loading thermal simulator...</div>
+    <button onclick="runPerformanceTest()" id="testBtn" disabled>Run Performance Test</button>
+    
+    <div id="results"></div>
+    
+    <script src="config.js"></script>
+    <script src="gpu-compute.js"></script>
+    <script>
+        let thermal = null;
+        
+        // Simple thermal simulation class for testing
+        class TestThermalSimulation {
+            constructor(useGPU = false) {
+                this.width = 200;
+                this.height = 200;
+                this.useGPU = useGPU;
+                this.thermalData = new Float32Array(this.width * this.height);
+                
+                if (useGPU) {
+                    try {
+                        this.gpuCompute = new GPUCompute(this.width, this.height);
+                        this.useGPU = this.gpuCompute.supported;
+                        if (!this.useGPU) {
+                            console.warn('GPU not supported, using CPU');
+                        }
+                    } catch (error) {
+                        console.warn('GPU initialization failed:', error);
+                        this.useGPU = false;
+                    }
+                }
+            }
+            
+            applyBrush(x, y, intensity = 0.5) {
+                if (this.useGPU && this.gpuCompute) {
+                    try {
+                        this.gpuCompute.applyBrush(x, y, {
+                            brushRadius: 5,
+                            brushIntensity: intensity,
+                            centerMultiplier: 1.0
+                        });
+                    } catch (error) {
+                        console.warn('GPU brush failed:', error);
+                        this.useGPU = false;
+                        this.applyBrushCPU(x, y, intensity);
+                    }
+                } else {
+                    this.applyBrushCPU(x, y, intensity);
+                }
+            }
+            
+            applyBrushCPU(x, y, intensity) {
+                const radius = 5;
+                for (let dy = -radius; dy <= radius; dy++) {
+                    for (let dx = -radius; dx <= radius; dx++) {
+                        const px = x + dx;
+                        const py = y + dy;
+                        if (px >= 0 && px < this.width && py >= 0 && py < this.height) {
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist <= radius) {
+                                const index = py * this.width + px;
+                                const falloff = 1 - (dist / radius);
+                                this.thermalData[index] += intensity * falloff;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            applyDecay() {
+                if (this.useGPU && this.gpuCompute) {
+                    try {
+                        this.gpuCompute.applyDecay(0.995);
+                    } catch (error) {
+                        this.useGPU = false;
+                        this.applyDecayCPU();
+                    }
+                } else {
+                    this.applyDecayCPU();
+                }
+            }
+            
+            applyDecayCPU() {
+                for (let i = 0; i < this.thermalData.length; i++) {
+                    this.thermalData[i] *= 0.995;
+                }
+            }
+            
+            syncFromGPU() {
+                if (this.useGPU && this.gpuCompute) {
+                    try {
+                        const data = this.gpuCompute.downloadThermalData();
+                        if (data) this.thermalData = data;
+                    } catch (error) {
+                        console.warn('GPU sync failed:', error);
+                    }
+                }
+            }
+        }
+        
+        function addResult(message, type = 'test-result') {
+            const div = document.createElement('div');
+            div.className = type;
+            div.innerHTML = message;
+            document.getElementById('results').appendChild(div);
+        }
+        
+        async function runPerformanceTest() {
+            const results = document.getElementById('results');
+            results.innerHTML = '';
+            
+            addResult('🧪 Starting Performance Test...', 'test-result');
+            
+            // Test parameters
+            const iterations = 1000;
+            const brushApplications = 50;
+            
+            // CPU Test
+            addResult('Testing CPU performance...', 'test-result');
+            const cpuSim = new TestThermalSimulation(false);
+            
+            const cpuStart = performance.now();
+            for (let i = 0; i < iterations; i++) {
+                // Apply random brush strokes
+                for (let j = 0; j < brushApplications; j++) {
+                    const x = Math.random() * cpuSim.width;
+                    const y = Math.random() * cpuSim.height;
+                    cpuSim.applyBrush(x, y);
+                }
+                cpuSim.applyDecay();
+                
+                // Yield control occasionally
+                if (i % 100 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1));
+                }
+            }
+            const cpuTime = performance.now() - cpuStart;
+            
+            addResult(`CPU: ${cpuTime.toFixed(1)}ms (${iterations} iterations, ${brushApplications} brush applications each)`, 'test-result');
+            
+            // GPU Test
+            addResult('Testing GPU performance...', 'test-result');
+            const gpuSim = new TestThermalSimulation(true);
+            
+            if (!gpuSim.useGPU) {
+                addResult('❌ GPU not available - skipping GPU test', 'warning');
+                return;
+            }
+            
+            const gpuStart = performance.now();
+            for (let i = 0; i < iterations; i++) {
+                // Apply random brush strokes
+                for (let j = 0; j < brushApplications; j++) {
+                    const x = Math.random() * gpuSim.width;
+                    const y = Math.random() * gpuSim.height;
+                    gpuSim.applyBrush(x, y);
+                }
+                gpuSim.applyDecay();
+                
+                // Sync from GPU occasionally for realistic test
+                if (i % 10 === 0) {
+                    gpuSim.syncFromGPU();
+                }
+                
+                // Yield control occasionally
+                if (i % 100 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1));
+                }
+            }
+            const gpuTime = performance.now() - gpuStart;
+            
+            addResult(`GPU: ${gpuTime.toFixed(1)}ms (${iterations} iterations, ${brushApplications} brush applications each)`, 'test-result');
+            
+            // Results
+            const speedup = cpuTime / gpuTime;
+            if (speedup > 1.1) {
+                addResult(`🚀 GPU is ${speedup.toFixed(1)}x faster than CPU!`, 'success');
+            } else if (speedup > 0.9) {
+                addResult(`⚖️ GPU and CPU performance are similar (${speedup.toFixed(1)}x)`, 'warning');
+            } else {
+                addResult(`⚠️ CPU is faster than GPU (${(1/speedup).toFixed(1)}x) - this is unusual`, 'warning');
+            }
+            
+            addResult(`Performance gain: ${((speedup - 1) * 100).toFixed(1)}%`, speedup > 1.1 ? 'success' : 'warning');
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            const status = document.getElementById('status');
+            const testBtn = document.getElementById('testBtn');
+            
+            try {
+                if (typeof GPUCompute !== 'undefined') {
+                    const testGPU = new GPUCompute(100, 100);
+                    if (testGPU.supported) {
+                        status.textContent = '✅ GPU acceleration available - ready to test';
+                        status.className = 'success';
+                    } else {
+                        status.textContent = '⚠️ GPU not supported - will test CPU only';
+                        status.className = 'warning';
+                    }
+                } else {
+                    status.textContent = '❌ GPU compute not loaded';
+                    status.className = 'warning';
+                }
+                testBtn.disabled = false;
+            } catch (error) {
+                status.textContent = `❌ Error: ${error.message}`;
+                status.className = 'warning';
+            }
+        });
+    </script>
+</body>
+</html>

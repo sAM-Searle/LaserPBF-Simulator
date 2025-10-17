@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GPU Test - WebGL2 Diagnostics</title>
+    <style>
+        body { 
+            font-family: monospace; 
+            background: #222; 
+            color: #fff; 
+            padding: 20px; 
+            line-height: 1.6;
+        }
+        .status { 
+            padding: 10px; 
+            margin: 10px 0; 
+            border-radius: 5px; 
+        }
+        .success { background: #2d5a2d; }
+        .warning { background: #5a5a2d; }
+        .error { background: #5a2d2d; }
+        .info { background: #2d2d5a; }
+    </style>
+</head>
+<body>
+    <h1>GPU Acceleration Diagnostics</h1>
+    <div id="results"></div>
+    
+    <script>
+        function addResult(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `status ${type}`;
+            div.textContent = message;
+            document.getElementById('results').appendChild(div);
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+        
+        function testWebGL2() {
+            addResult('Testing WebGL2 support...', 'info');
+            
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl2');
+            
+            if (!gl) {
+                addResult('❌ WebGL2 not supported', 'error');
+                return false;
+            }
+            
+            addResult('✅ WebGL2 context created successfully', 'success');
+            
+            // Check extensions
+            const floatExt = gl.getExtension('EXT_color_buffer_float');
+            if (!floatExt) {
+                addResult('❌ EXT_color_buffer_float not supported', 'error');
+                return false;
+            }
+            
+            addResult('✅ EXT_color_buffer_float extension available', 'success');
+            
+            // Test texture creation
+            try {
+                const tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 100, 100, 0, gl.RED, gl.FLOAT, null);
+                
+                const fb = gl.createFramebuffer();
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+                
+                const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                if (status === gl.FRAMEBUFFER_COMPLETE) {
+                    addResult('✅ Float texture framebuffer test passed', 'success');
+                } else {
+                    addResult(`❌ Framebuffer incomplete: ${status}`, 'error');
+                    return false;
+                }
+                
+                gl.deleteTexture(tex);
+                gl.deleteFramebuffer(fb);
+                
+            } catch (error) {
+                addResult(`❌ Texture test failed: ${error.message}`, 'error');
+                return false;
+            }
+            
+            return true;
+        }
+        
+        function testGPUCompute() {
+            addResult('Testing GPUCompute class...', 'info');
+            
+            try {
+                if (typeof GPUCompute === 'undefined') {
+                    addResult('❌ GPUCompute class not loaded', 'error');
+                    return false;
+                }
+                
+                const gpu = new GPUCompute(100, 100);
+                
+                if (gpu.supported) {
+                    addResult('✅ GPUCompute initialized successfully', 'success');
+                    addResult(`GPU canvas size: ${gpu.width}x${gpu.height}`, 'info');
+                    return true;
+                } else {
+                    addResult('❌ GPUCompute initialization failed', 'error');
+                    return false;
+                }
+                
+            } catch (error) {
+                addResult(`❌ GPUCompute error: ${error.message}`, 'error');
+                return false;
+            }
+        }
+        
+        function runDiagnostics() {
+            addResult('Starting GPU acceleration diagnostics...', 'info');
+            addResult(`Browser: ${navigator.userAgent}`, 'info');
+            
+            const webgl2Works = testWebGL2();
+            
+            if (webgl2Works) {
+                addResult('Loading GPUCompute...', 'info');
+                
+                // Load the GPU compute script
+                const script = document.createElement('script');
+                script.src = 'gpu-compute.js';
+                script.onload = () => {
+                    const gpuWorks = testGPUCompute();
+                    
+                    if (gpuWorks) {
+                        addResult('🎉 GPU acceleration should work!', 'success');
+                    } else {
+                        addResult('⚠️ GPU acceleration may have issues', 'warning');
+                    }
+                };
+                script.onerror = () => {
+                    addResult('❌ Failed to load gpu-compute.js', 'error');
+                };
+                document.head.appendChild(script);
+            } else {
+                addResult('🔄 Will fall back to CPU acceleration', 'warning');
+            }
+        }
+        
+        // Start diagnostics
+        runDiagnostics();
+    </script>
+</body>
+</html>
