@@ -21,6 +21,9 @@ class ThermalBrush {
         this.positionQueue = [];
         this.maxPositionsPerFrame = BrushConfig.performance.maxPositionsPerFrame;
         
+        // Frame counter for timing
+        this.frameCounter = 0;
+        
         // Create brush
         this.brush = this.createFeatheredBrush(this.brushRadius);
         
@@ -152,7 +155,7 @@ class ThermalBrush {
         
         // Center dot
         const centerIndex = y * this.width + x;
-        this.thermalData[centerIndex] += this.brushIntensity * 2;
+        this.thermalData[centerIndex] += this.brushIntensity * BrushConfig.thermal.centerMultiplier;
     }
     
     // Optimized Gaussian blur with pre-computed kernel and efficient memory access
@@ -207,7 +210,7 @@ class ThermalBrush {
     
     initializeGaussianKernel() {
         const sigma = BrushConfig.thermal.blurSigma;
-        this.gaussianRadius = Math.min(Math.ceil(sigma * 2.5), 15); // Limit radius for performance
+        this.gaussianRadius = Math.min(Math.ceil(sigma * BrushConfig.thermal.sigmaMultiplier), BrushConfig.thermal.maxGaussianRadius);
         const radius = this.gaussianRadius;
         
         this.gaussianKernel = new Float32Array(radius * 2 + 1);
@@ -247,7 +250,8 @@ class ThermalBrush {
                 b: 0
             };
         } else {
-            const t = (value - BrushConfig.visual.colormap.secondTransition) / BrushConfig.visual.colormap.thirdTransition;
+            const remainingRange = 1.0 - BrushConfig.visual.colormap.secondTransition;
+            const t = (value - BrushConfig.visual.colormap.secondTransition) / remainingRange;
             return {
                 r: 255,
                 g: Math.floor(128 + 127 * t),
@@ -261,6 +265,13 @@ class ThermalBrush {
             if (this.thermalData[i] >= this.threshold) {
                 this.persistentMask[i] = 1;
             }
+        }
+    }
+    
+    applyThermalDecay() {
+        const decayRate = BrushConfig.thermal.decayRate;
+        for (let i = 0; i < this.thermalData.length; i++) {
+            this.thermalData[i] *= decayRate;
         }
     }
     
@@ -322,6 +333,8 @@ class ThermalBrush {
     }
     
     animate() {
+        this.frameCounter++;
+        
         // Process queue
         let processed = 0;
         while (this.positionQueue.length > 0 && processed < this.maxPositionsPerFrame) {
@@ -330,8 +343,11 @@ class ThermalBrush {
             processed++;
         }
         
+        // Apply thermal decay
+        this.applyThermalDecay();
+        
         // Apply blur every few frames to maintain performance
-        if (Date.now() % BrushConfig.thermal.blurInterval === 0) { // Configurable interval
+        if (this.frameCounter % BrushConfig.thermal.blurInterval === 0) {
             this.applyGaussianBlur();
         }
         

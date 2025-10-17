@@ -17,13 +17,17 @@ const BrushConfig = {
     thermal: {
         blurSigma: 2,           // Reduced for phone performance
         blurRadius: 9,          // Box blur radius for performance
-        blurInterval: 1         // Apply blur every 3rd frame
+        blurInterval: 1,        // Apply blur every 3rd frame
+        sigmaMultiplier: 2.5,   // Multiplier for calculating gaussian radius
+        maxGaussianRadius: 15,  // Maximum gaussian radius for performance
+        decayRate: 0.995,       // Thermal decay rate per frame
+        centerMultiplier: 2     // Center point intensity multiplier
     },
     
     // Performance settings
     performance: {
         maxPositionsPerFrame: 10,    // Reduced for phones
-        contourSkipPixels: 0        // Skip pixels for contour rendering
+        contourSkipPixels: 2        // Skip pixels for contour rendering
     },
     
     // Visual appearance
