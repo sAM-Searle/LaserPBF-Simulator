@@ -10,8 +10,15 @@
     </style>
 </head>
 <body>
-    <canvas id="canvas" width="800" height="600"></canvas>
+    <canvas id="canvas"></canvas>
     <div id="debug"></div>
-    <script src="thermal-brush.js"></script>
+    <script src="config.js"></script>
+    <script>
+        // Set canvas dimensions from config
+        const canvas = document.getElementById('canvas');
+        canvas.width = BrushConfig.canvas.width;
+        canvas.height = BrushConfig.canvas.height;
+    </script>
+    <script src="main.js"></script>
 </body>
 </html>

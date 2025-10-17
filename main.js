@@ -2,24 +2,24 @@ class ThermalBrush {
     constructor() {
         this.canvas = document.getElementById('canvas');
         this.ctx = this.canvas.getContext('2d');
-        this.width = 800;
-        this.height = 600;
+        this.width = BrushConfig.canvas.width;
+        this.height = BrushConfig.canvas.height;
         
         // Thermal data - using Float32Array for performance
         this.thermalData = new Float32Array(this.width * this.height);
         this.persistentMask = new Uint8Array(this.width * this.height);
         
-        // Parameters
-        this.brushRadius = 5;
-        this.blurSigma = 2; // Reduced for phone performance
-        this.threshold = 0.5;
-        this.brushIntensity = 0.1;
+        // Parameters from config
+        this.brushRadius = BrushConfig.brush.radius;
+        this.blurSigma = BrushConfig.thermal.blurSigma;
+        this.threshold = BrushConfig.brush.threshold;
+        this.brushIntensity = BrushConfig.brush.intensity;
         
         // Drawing state
         this.isDrawing = false;
         this.lastPos = null;
         this.positionQueue = [];
-        this.maxPositionsPerFrame = 5; // Reduced for phones
+        this.maxPositionsPerFrame = BrushConfig.performance.maxPositionsPerFrame;
         
         // Create brush
         this.brush = this.createFeatheredBrush(this.brushRadius);
@@ -158,7 +158,7 @@ class ThermalBrush {
     // Simple box blur (much faster than Gaussian on CPU)
     applyBoxBlur() {
         const temp = new Float32Array(this.thermalData.length);
-        const radius = 2; // Small radius for performance
+        const radius = BrushConfig.thermal.blurRadius; // Small radius for performance
         
         // Horizontal pass
         for (let y = 0; y < this.height; y++) {
@@ -200,22 +200,22 @@ class ThermalBrush {
         value = Math.max(0, Math.min(1, value));
         
         // Thermal colormap: gray -> red -> orange -> white
-        if (value < 0.33) {
-            const t = value / 0.33;
+        if (value < BrushConfig.visual.colormap.firstTransition) {
+            const t = value / BrushConfig.visual.colormap.firstTransition;
             return {
                 r: Math.floor(128 + (255 - 128) * t),
                 g: Math.floor(128 * (1 - t)),
                 b: Math.floor(128 * (1 - t))
             };
-        } else if (value < 0.66) {
-            const t = (value - 0.33) / 0.33;
+        } else if (value < BrushConfig.visual.colormap.secondTransition) {
+            const t = (value - BrushConfig.visual.colormap.firstTransition) / BrushConfig.visual.colormap.firstTransition;
             return {
                 r: 255,
                 g: Math.floor(128 * t),
                 b: 0
             };
         } else {
-            const t = (value - 0.66) / 0.34;
+            const t = (value - BrushConfig.visual.colormap.secondTransition) / BrushConfig.visual.colormap.thirdTransition;
             return {
                 r: 255,
                 g: Math.floor(128 + 127 * t),
@@ -257,19 +257,19 @@ class ThermalBrush {
     }
     
     drawContours() {
-        this.ctx.strokeStyle = 'red';
-        this.ctx.lineWidth = 1;
+        this.ctx.strokeStyle = BrushConfig.visual.contour.strokeColor;
+        this.ctx.lineWidth = BrushConfig.visual.contour.lineWidth;
         
         // Simple contour detection - just draw points above threshold
-        for (let y = 0; y < this.height; y += 2) { // Skip pixels for performance
-            for (let x = 0; x < this.width; x += 2) {
+        for (let y = 0; y < this.height; y += BrushConfig.performance.contourSkipPixels) { // Skip pixels for performance
+            for (let x = 0; x < this.width; x += BrushConfig.performance.contourSkipPixels) {
                 const index = y * this.width + x;
                 if (this.thermalData[index] >= this.threshold) {
-                    this.ctx.fillStyle = 'red';
+                    this.ctx.fillStyle = BrushConfig.visual.contour.thresholdColor;
                     this.ctx.fillRect(x, y, 1, 1);
                 }
                 if (this.persistentMask[index]) {
-                    this.ctx.fillStyle = 'black';
+                    this.ctx.fillStyle = BrushConfig.visual.contour.persistentColor;
                     this.ctx.fillRect(x, y, 1, 1);
                 }
             }
@@ -299,7 +299,7 @@ class ThermalBrush {
         }
         
         // Apply blur every few frames to maintain performance
-        if (Date.now() % 3 === 0) { // Every 3rd frame
+        if (Date.now() % BrushConfig.thermal.blurInterval === 0) { // Configurable interval
             this.applyBoxBlur();
         }
         
