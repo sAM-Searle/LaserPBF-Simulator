@@ -155,43 +155,75 @@ class ThermalBrush {
         this.thermalData[centerIndex] += this.brushIntensity * 2;
     }
     
-    // Simple box blur (much faster than Gaussian on CPU)
-    applyBoxBlur() {
-        const temp = new Float32Array(this.thermalData.length);
-        const radius = BrushConfig.thermal.blurRadius; // Small radius for performance
+    // Optimized Gaussian blur with pre-computed kernel and efficient memory access
+    applyGaussianBlur() {
+        if (!this.gaussianKernel) {
+            this.initializeGaussianKernel();
+        }
         
-        // Horizontal pass
+        if (!this.tempBuffer) {
+            this.tempBuffer = new Float32Array(this.thermalData.length);
+        }
+        
+        const kernel = this.gaussianKernel;
+        const radius = this.gaussianRadius;
+        const temp = this.tempBuffer;
+        
+        // Horizontal pass - optimized with bounds checking outside inner loop
         for (let y = 0; y < this.height; y++) {
+            const rowOffset = y * this.width;
+            
             for (let x = 0; x < this.width; x++) {
                 let sum = 0;
-                let count = 0;
+                const startX = Math.max(0, x - radius);
+                const endX = Math.min(this.width - 1, x + radius);
                 
-                for (let i = -radius; i <= radius; i++) {
-                    const nx = x + i;
-                    if (nx >= 0 && nx < this.width) {
-                        sum += this.thermalData[y * this.width + nx];
-                        count++;
-                    }
+                // Use direct array access for better performance
+                for (let nx = startX; nx <= endX; nx++) {
+                    const weight = kernel[nx - x + radius];
+                    sum += this.thermalData[rowOffset + nx] * weight;
                 }
-                temp[y * this.width + x] = sum / count;
+                
+                temp[rowOffset + x] = sum;
             }
         }
         
-        // Vertical pass
-        for (let y = 0; y < this.height; y++) {
-            for (let x = 0; x < this.width; x++) {
+        // Vertical pass - optimized with pre-calculated offsets
+        for (let x = 0; x < this.width; x++) {
+            for (let y = 0; y < this.height; y++) {
                 let sum = 0;
-                let count = 0;
+                const startY = Math.max(0, y - radius);
+                const endY = Math.min(this.height - 1, y + radius);
                 
-                for (let i = -radius; i <= radius; i++) {
-                    const ny = y + i;
-                    if (ny >= 0 && ny < this.height) {
-                        sum += temp[ny * this.width + x];
-                        count++;
-                    }
+                for (let ny = startY; ny <= endY; ny++) {
+                    const weight = kernel[ny - y + radius];
+                    sum += temp[ny * this.width + x] * weight;
                 }
-                this.thermalData[y * this.width + x] = sum / count;
+                
+                this.thermalData[y * this.width + x] = sum;
             }
+        }
+    }
+    
+    initializeGaussianKernel() {
+        const sigma = BrushConfig.thermal.blurSigma;
+        this.gaussianRadius = Math.min(Math.ceil(sigma * 2.5), 15); // Limit radius for performance
+        const radius = this.gaussianRadius;
+        
+        this.gaussianKernel = new Float32Array(radius * 2 + 1);
+        const twoSigmaSquared = 2 * sigma * sigma;
+        let sum = 0;
+        
+        // Calculate kernel weights
+        for (let i = -radius; i <= radius; i++) {
+            const weight = Math.exp(-(i * i) / twoSigmaSquared);
+            this.gaussianKernel[i + radius] = weight;
+            sum += weight;
+        }
+        
+        // Normalize kernel to prevent brightness changes
+        for (let i = 0; i < this.gaussianKernel.length; i++) {
+            this.gaussianKernel[i] /= sum;
         }
     }
     
@@ -300,7 +332,7 @@ class ThermalBrush {
         
         // Apply blur every few frames to maintain performance
         if (Date.now() % BrushConfig.thermal.blurInterval === 0) { // Configurable interval
-            this.applyBoxBlur();
+            this.applyGaussianBlur();
         }
         
         // Update persistent mask
