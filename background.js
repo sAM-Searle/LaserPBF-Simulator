@@ -599,23 +599,21 @@
       maxNorm = m || 1;
     }
 
-    // Render threshold hits, either in color or grayscale based on config
-    for (let y = 0; y < height; y += safeStep) {
-      const row = y * width;
-      for (let x = 0; x < width; x += safeStep) {
-        const idx = row + x;
-        const t = thermalData[idx];
-        if (t >= threshold) {
-          if (thrMode === 'grayscale' && maxData) {
+    // Render threshold hits only in grayscale if configured, otherwise skip drawing threshold color
+    if (thrMode === 'grayscale' && maxData) {
+      for (let y = 0; y < height; y += safeStep) {
+        const row = y * width;
+        for (let x = 0; x < width; x += safeStep) {
+          const idx = row + x;
+          const t = thermalData[idx];
+          if (t >= threshold) {
             const v = maxData[idx];
             let norm = Math.max(0, Math.min(1, v / maxNorm));
             if (gamma !== 1.0) norm = Math.pow(norm, gamma);
             const gray = Math.floor(grayMin + (grayMax - grayMin) * norm);
             ctx.fillStyle = `rgb(${gray},${gray},${gray})`;
-          } else {
-            ctx.fillStyle = thresholdColor;
+            ctx.fillRect(x, y, 1, 1);
           }
-          ctx.fillRect(x, y, 1, 1);
         }
       }
     }

@@ -3,13 +3,11 @@
 <head>
     <title>GPU Test - WebGL2 Diagnostics</title>
     <style>
-        body { 
             font-family: monospace; 
             background: #222; 
             color: #fff; 
             padding: 20px; 
             line-height: 1.6;
-        }
         .status { 
             padding: 10px; 
             margin: 10px 0; 
@@ -21,6 +19,30 @@
         .info { background: #2d2d5a; }
     </style>
 </head>
+        <head>
+            <title>GPU Test - WebGL2 Diagnostics</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: monospace;
+                    background: #222;
+                    color: #fff;
+                    padding: 20px;
+                    line-height: 1.6;
+                }
+                .status {
+                    padding: 10px;
+                    margin: 10px 0;
+                    border-radius: 5px;
+                }
+                .success { background: #2d5a2d; }
+                .warning { background: #5a5a2d; }
+                .error { background: #5a2d2d; }
+                @media (max-width: 600px) {
+                    body { padding: 8px; font-size: 1em; }
+                    .status { font-size: 0.95em; }
+                }
+            </style>
 <body>
     <h1>GPU Acceleration Diagnostics</h1>
     <div id="results"></div>
@@ -31,6 +53,34 @@
             div.className = `status ${type}`;
             div.textContent = message;
             document.getElementById('results').appendChild(div);
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>GPU Test - WebGL2 Diagnostics</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {
+                    font-family: monospace;
+                    background: #222;
+                    color: #fff;
+                    padding: 20px;
+                    line-height: 1.6;
+                }
+                .status {
+                    padding: 10px;
+                    margin: 10px 0;
+                    border-radius: 5px;
+                }
+                .success { background: #2d5a2d; }
+                .warning { background: #5a5a2d; }
+                .error { background: #5a2d2d; }
+                .info { background: #2d2d5a; }
+                @media (max-width: 600px) {
+                    body { padding: 8px; font-size: 1em; }
+                    .status { font-size: 0.95em; }
+                }
+            </style>
+        </head>
             console.log(`[${type.toUpperCase()}] ${message}`);
         }
         

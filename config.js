@@ -60,20 +60,20 @@ const BrushConfig = {
         // Contour rendering
         contour: {
             strokeColor: 'red',
-            lineWidth: 5,
+            lineWidth: 20,
             // Rendering mode for threshold hits: 'color' | 'grayscale'
             thresholdMode: 'color',
-            thresholdColor: 'red',
+            thresholdColor: 'black',
             // Rendering mode for persistent mask: 'color' | 'grayscale'
             persistentMode: 'grayscale',
             persistentColor: 'gray',
             // Grayscale mapping controls for both modes when set to 'grayscale'
             grayGamma: 1,          // non-linear contrast for grayscale mapping
-            grayMin: 15,              // minimum gray value (0..255)
-            grayMax: 200,            // maximum gray value (0..255)
+            grayMin: 0,              // minimum gray value (0..255)
+            grayMax: 255,            // maximum gray value (0..255)
             // Optional ceiling for normalization of max temperature values
             // If > 0, normalization uses min(observedMax, grayMaxCeiling)
-            grayMaxCeiling: 1.2
+            grayMaxCeiling: 4
         },
         
         // Laser position visualization
