@@ -4,20 +4,50 @@
     <title>Thermal Brush Simulator</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { margin: 0; padding: 0; background: rgb(0, 0, 0); overflow: hidden; }
-        canvas { display: block; margin: 0 auto; touch-action: none; }
-        #debug { position: absolute; top: 10px; left: 10px; color: white; font-family: monospace; }
+    body { margin: 0; padding: 0; background: rgb(0, 0, 0); overflow: hidden; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    #stage { position: relative; width: fit-content; height: fit-content; }
+        canvas { display: block; touch-action: none; }
+        #bgCanvas { position: absolute; top: 0; left: 0; z-index: 0; }
+        #canvas { position: absolute; top: 0; left: 0; z-index: 1; }
+        #debug { position: absolute; top: 10px; left: 10px; color: white; font-family: monospace; z-index: 2; }
+    #freezeBtn { position: absolute; top: 10px; right: 10px; z-index: 4; padding: 6px 10px; border: 1px solid #777; background: #222; color: #fff; border-radius: 4px; cursor: pointer; }
+    #freezeBtn:hover { background: #333; }
     </style>
 </head>
 <body>
-    <canvas id="canvas"></canvas>
-    <div id="debug"></div>
+    <div id="stage">
+        <canvas id="bgCanvas"></canvas>
+        <canvas id="canvas"></canvas>
+        <button id="freezeBtn" onclick="window.freezeFrameAndWipe && window.freezeFrameAndWipe()">Freeze & Wipe</button>
+        <div id="debug"></div>
+    </div>
     <script src="config.js"></script>
     <script>
-        // Set canvas dimensions from config
+        // Set canvas dimensions from config and keep canvases stacked the same size
+        const bgCanvas = document.getElementById('bgCanvas');
         const canvas = document.getElementById('canvas');
-        canvas.width = BrushConfig.canvas.width;
-        canvas.height = BrushConfig.canvas.height;
+        const stage = document.getElementById('stage');
+        bgCanvas.width = canvas.width = BrushConfig.canvas.width;
+        bgCanvas.height = canvas.height = BrushConfig.canvas.height;
+        // Absolutely positioned canvases don't size the parent; set stage size explicitly for proper centering
+        stage.style.width = BrushConfig.canvas.width + 'px';
+        stage.style.height = BrushConfig.canvas.height + 'px';
+    </script>
+    <script src="background.js"></script>
+    <script>
+        // Initialize background from config
+        if (BrushConfig.background?.enabled) {
+            window.bg = new CustomBackground({
+                canvasId: 'bgCanvas',
+                animate: BrushConfig.background.animate,
+                showFPS: BrushConfig.background.showFPS,
+                pushRadius: BrushConfig.background.pushRadius,
+                bgCircleCount: BrushConfig.background.bgCircleCount,
+                topCircleCount: BrushConfig.background.topCircleCount,
+                baseColor: BrushConfig.background.baseColor,
+                interactionMode: BrushConfig.background.interactionMode
+            });
+        }
     </script>
     <script src="main.js"></script>
 </body>

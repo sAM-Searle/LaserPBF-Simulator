@@ -8,6 +8,8 @@ class ThermalBrush {
         // Thermal data - using Float32Array for performance
         this.thermalData = new Float32Array(this.width * this.height);
         this.persistentMask = new Uint8Array(this.width * this.height);
+    // Tracks the maximum intensity a pixel has reached while at/above threshold
+    this.maxThresholded = new Float32Array(this.width * this.height);
         
         // Parameters from config
         this.brushRadius = BrushConfig.brush.radius;
@@ -36,6 +38,22 @@ class ThermalBrush {
         
         // Start animation loop
         this.animate();
+
+        // Setup freeze/wipe overlay canvas
+        this.overlayCanvas = document.createElement('canvas');
+        this.overlayCanvas.id = 'freezeOverlay';
+        this.overlayCanvas.width = this.width;
+        this.overlayCanvas.height = this.height;
+        this.overlayCanvas.style.position = 'absolute';
+        this.overlayCanvas.style.top = '0';
+        this.overlayCanvas.style.left = '0';
+        this.overlayCanvas.style.zIndex = '3';
+        this.overlayCanvas.style.pointerEvents = 'none';
+        document.getElementById('stage').appendChild(this.overlayCanvas);
+        this.overlayCtx = this.overlayCanvas.getContext('2d');
+
+        // Expose control to UI
+        window.freezeFrameAndWipe = () => this.freezeFrameAndWipe();
     }
     
     createFeatheredBrush(radius) {
@@ -117,6 +135,17 @@ class ThermalBrush {
     
     stopDrawing() {
         this.isDrawing = false;
+    }
+
+    // Allow external components (e.g., background) to enqueue a draw position
+    enqueuePosition(pos) {
+        if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+        const x = Math.max(0, Math.min(this.width - 1, Math.floor(pos.x)));
+        const y = Math.max(0, Math.min(this.height - 1, Math.floor(pos.y)));
+        const last = this.positionQueue[this.positionQueue.length - 1];
+        if (!last || last.x !== x || last.y !== y) {
+            this.positionQueue.push({ x, y });
+        }
     }
     
     addLinePositions(start, end) {
@@ -336,8 +365,16 @@ class ThermalBrush {
     }
     
     updatePersistentMask() {
-        for (let i = 0; i < this.thermalData.length; i++) {
-            if (this.thermalData[i] >= this.threshold) {
+        // Persistently track peak temperature per pixel (independent of threshold)
+        // and mark pixels that have ever crossed the threshold.
+        const thr = this.threshold;
+        const len = this.thermalData.length;
+        for (let i = 0; i < len; i++) {
+            const v = this.thermalData[i];
+            if (v > this.maxThresholded[i]) {
+                this.maxThresholded[i] = v;
+            }
+            if (v >= thr) {
                 this.persistentMask[i] = 1;
             }
         }
@@ -354,21 +391,50 @@ class ThermalBrush {
         const imageData = this.ctx.createImageData(this.width, this.height);
         const data = imageData.data;
         
+        const overlayCfg = BrushConfig.visual?.overlay || { alphaMode: 'temperature', alphaScale: 1.0 };
+        const mode = overlayCfg.alphaMode;
+        const alphaScale = Math.max(0, Math.min(1, overlayCfg.alphaScale ?? 1.0));
+
         // Apply thermal colormap
         for (let i = 0; i < this.thermalData.length; i++) {
-            const color = this.thermalColormap(this.thermalData[i]);
+            const raw = this.thermalData[i];
+            const color = this.thermalColormap(raw);
             const pixelIndex = i * 4;
-            
+
             data[pixelIndex] = color.r;     // R
             data[pixelIndex + 1] = color.g; // G
             data[pixelIndex + 2] = color.b; // B
-            data[pixelIndex + 3] = 255;     // A
+
+            let a;
+            if (mode === 'opaque') {
+                a = 255;
+            } else { // 'temperature'
+                const t = Math.max(0, Math.min(1, raw));
+                a = Math.floor(255 * t * alphaScale);
+            }
+            data[pixelIndex + 3] = a;
         }
         
         this.ctx.putImageData(imageData, 0, 0);
         
-        // Draw contours (simplified for performance)
-        this.drawContours();
+        // Draw contours in background overlay instead of foreground
+        if (window.bg && typeof window.bg.updateContourOverlay === 'function') {
+            // Optional: throttle overlay updates using a frame interval; default to every frame if not configured
+            const interval = Math.max(1, (BrushConfig.performance && BrushConfig.performance.contourInterval) || 1);
+            if ((this.frameCounter % interval) === 0) {
+                window.bg.updateContourOverlay({
+                    thermalData: this.thermalData,
+                    maxData: this.maxThresholded,
+                    persistentMask: this.persistentMask,
+                    width: this.width,
+                    height: this.height,
+                    threshold: this.threshold,
+                    step: Math.max(1, (BrushConfig.performance.contourSkipPixels | 0)),
+                    thresholdColor: BrushConfig.visual.contour.thresholdColor,
+                    persistentColor: BrushConfig.visual.contour.persistentColor
+                });
+            }
+        }
         
         // Draw laser positions
         this.drawLaserPositions();
@@ -377,25 +443,7 @@ class ThermalBrush {
         this.updateDebugInfo();
     }
     
-    drawContours() {
-        this.ctx.strokeStyle = BrushConfig.visual.contour.strokeColor;
-        this.ctx.lineWidth = BrushConfig.visual.contour.lineWidth;
-        
-        // Simple contour detection - just draw points above threshold
-        for (let y = 0; y < this.height; y += BrushConfig.performance.contourSkipPixels) { // Skip pixels for performance
-            for (let x = 0; x < this.width; x += BrushConfig.performance.contourSkipPixels) {
-                const index = y * this.width + x;
-                if (this.thermalData[index] >= this.threshold) {
-                    this.ctx.fillStyle = BrushConfig.visual.contour.thresholdColor;
-                    this.ctx.fillRect(x, y, 1, 1);
-                }
-                if (this.persistentMask[index]) {
-                    this.ctx.fillStyle = BrushConfig.visual.contour.persistentColor;
-                    this.ctx.fillRect(x, y, 1, 1);
-                }
-            }
-        }
-    }
+    // drawContours removed; contours are rendered by the background overlay
     
     updateDebugInfo() {
         const debug = document.getElementById('debug');
@@ -432,6 +480,12 @@ class ThermalBrush {
 
 
     animate() {
+        // If paused (during freeze & wipe), skip all updates but keep the RAF loop alive
+        if (this._paused) {
+            requestAnimationFrame(() => this.animate());
+            return;
+        }
+
         this.frameCounter++;
         
         // Process queue
@@ -439,6 +493,10 @@ class ThermalBrush {
         while (this.positionQueue.length > 0 && processed < this.maxPositionsPerFrame) {
             const pos = this.positionQueue.shift();
             this.applyBrush(pos.x, pos.y);
+            // Inform background of the actual applied position
+            if (window.bg && typeof window.bg.onBrushPosition === 'function') {
+                window.bg.onBrushPosition(pos);
+            }
             processed++;
         }
         
@@ -462,4 +520,72 @@ class ThermalBrush {
 }
 
 // Start the app
-new ThermalBrush();
+window.thermalBrush = new ThermalBrush();
+
+// Freeze current frame, overlay it, recreate background, then wipe overlay left-to-right
+ThermalBrush.prototype.freezeFrameAndWipe = function() {
+
+    if (this.tempBuffer) this.tempBuffer.fill(0);
+    if (this.thermalData) this.thermalData.fill(0);
+
+    // 1) Capture current composite view: draw bgCanvas + main canvas into overlay
+    const bgCanvas = document.getElementById('bgCanvas');
+    this.overlayCtx.clearRect(0, 0, this.width, this.height);
+    if (bgCanvas) this.overlayCtx.drawImage(bgCanvas, 0, 0);
+    this.overlayCtx.drawImage(this.canvas, 0, 0);
+    if (this.persistentMask) this.persistentMask.fill(0);
+    if (this.maxThresholded) this.maxThresholded.fill(0);
+
+
+
+    // 2) Pause any further drawing by stopping background animation and setting a pause flag
+    if (this._freezing) return;
+    this._freezing = true;
+    this._paused = true;
+    if (window.bg && typeof window.bg.stop === 'function') {
+        window.bg.stop();
+    }
+
+    // 2b) Reset all simulation arrays/state to zero so the new layer starts clean
+
+    this.positionQueue.length = 0;
+    this.lastPos = null;
+    this.prevSmooth = null;
+    this.isDrawing = false;
+    // Clear the foreground canvas so no old frame remains under the overlay
+    this.ctx.clearRect(0, 0, this.width, this.height);
+    // Clear background contour overlay so no old contours persist
+    if (window.bg && window.bg._contourCtx && window.bg._contourCanvas) {
+        window.bg._contourCtx.clearRect(0, 0, window.bg._contourCanvas.width, window.bg._contourCanvas.height);
+    }
+
+    // 3) Recreate a fresh background (clear and redraw baked layer and top circles)
+    if (window.bg && typeof window.bg._drawBackground === 'function') {
+        // Reset top layer circles, redraw background, and restart animation loop paused
+        if (Array.isArray(window.bg.topLayerCircles)) window.bg.topLayerCircles.length = 0;
+        if (typeof window.bg._initTopLayer === 'function') window.bg._initTopLayer();
+        window.bg._drawBackground();
+    }
+
+    // 4) Wipe overlay from left to right to reveal new background and resumed simulation rendering beneath
+    const totalWidth = this.width;
+    let wiped = 0;
+    const wipeStep = Math.max(1, Math.floor(totalWidth / 120)); // ~2s at 60fps
+    const wipe = () => {
+        // Clear a vertical strip from overlay
+        this.overlayCtx.clearRect(wiped, 0, wipeStep, this.height);
+        wiped += wipeStep;
+        if (wiped < totalWidth) {
+            requestAnimationFrame(wipe);
+        } else {
+            // Done wiping: remove overlay image entirely
+            this.overlayCtx.clearRect(0, 0, this.width, this.height);
+            this._paused = false;
+            if (window.bg && typeof window.bg.start === 'function') {
+                window.bg.start();
+            }
+            this._freezing = false;
+        }
+    };
+    requestAnimationFrame(wipe);
+};
