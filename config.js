@@ -17,7 +17,7 @@ const BrushConfig = {
     thermal: {
         blurSigma: 2,           // Reduced for phone performance
         blurRadius: 16,          // Box blur radius for performance
-        blurInterval: 3,        // Apply blur every 3rd frame
+        blurInterval: 5,        // Apply blur every 5th frame
         sigmaMultiplier: 2.5,   // Multiplier for calculating gaussian radius
         maxGaussianRadius: 15,  // Maximum gaussian radius for performance
         decayRate: 0.9,       // Thermal decay rate per frame
@@ -28,15 +28,15 @@ const BrushConfig = {
     performance: {
         maxPositionsPerFrame: 20,    // Reduced for phones
         contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
-        contourInterval: 1,          // Frames between contour overlay updates (increase to lighten CPU)
-        debugUpdateInterval: 20,     // Update debug info every N frames
+        contourInterval: 3,          // Frames between contour overlay updates (increase to lighten CPU)
+        debugUpdateInterval: 30,     // Update debug info every N frames
         debugSampleStep: 1,          // Sample every Nth pixel for debug stats to reduce cost
         
         // GPU acceleration settings
         useGPU: true,               // Enable GPU acceleration if available
         gpuBatchSize: 8,         // Number of brush applications to batch for GPU
         gpuFallback: true,          // Automatically fallback to CPU if GPU fails
-        gpuSyncInterval: 1,         // Frames between GPU->CPU thermal sync (1=every frame)
+        gpuSyncInterval: 2,     // Frames between GPU->CPU thermal sync (higher = less CPU but more latency)
         gpuMaskSyncInterval: 6,     // Frames between GPU->CPU max/persistent syncs
         pauseBackgroundOnSlowCPU: false, // If true, pause animated background when CPU frames are slow
         slowCpuFrameMs: 22          // Threshold in ms to consider frame slow (about half refresh @ 60Hz)
@@ -89,6 +89,18 @@ const BrushConfig = {
             alphaMode: 'temperature',
             // Additional scale factor applied to computed alpha (0..1). 1.0 = no change
             alphaScale: 1.0
+        },
+
+        // Particle effects for brush visualization
+        particles: {
+            numPerPosition: 0.5,                 // Average number of particles created per brush position (can be fractional)
+            velocity: { min: 1, max: 5 },        // Velocity range (pixels per frame)
+            fadeRate: 0.02,                      // Alpha decrease per frame
+            maxParticles: 50,                   // Maximum number of particles
+            size: 2,                             // Particle radius
+            colors: ['234,130,11', '141,76,12', '255,255,255'],  // RGB values for red, orange, white
+            startAlpha: 1,                       // Starting alpha value
+            recirculationFlow: -0.8               // Y acceleration (pixels per frame squared)
         }
     },
 

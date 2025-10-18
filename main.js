@@ -62,6 +62,9 @@ class ThermalBrush {
         this.isDrawing = false;
         this.lastPos = null;
         this.positionQueue = [];
+        this.brushPositions = [];
+        this.particles = [];
+        this.particleSprites = new Map();
         this.maxPositionsPerFrame = BrushConfig.performance.maxPositionsPerFrame;
         
         // Frame counter for timing
@@ -163,7 +166,7 @@ class ThermalBrush {
                 clientY: touch.clientY
             });
             this.startDrawing(mouseEvent);
-        });
+        }, { passive: false });
         
         this.canvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
@@ -173,12 +176,12 @@ class ThermalBrush {
                 clientY: touch.clientY
             });
             this.draw(mouseEvent);
-        });
+        }, { passive: false });
         
         this.canvas.addEventListener('touchend', (e) => {
             e.preventDefault();
             this.stopDrawing();
-        });
+        }, { passive: false });
     }
     
     getEventPos(e) {
@@ -625,6 +628,70 @@ class ThermalBrush {
         // Draw laser positions
         this.drawLaserPositions();
         
+        // Update and draw particles
+        const particleCfg = BrushConfig.visual?.particles || {};
+        const fadeRate = particleCfg.fadeRate ?? 0.02;
+        const size = particleCfg.size ?? 2;
+        const recirculationFlow = particleCfg.recirculationFlow ?? 0;
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.vy += recirculationFlow; // Apply recirculation flow
+            p.x += p.vx;
+            p.y += p.vy;
+            p.alpha -= fadeRate; // Fade out
+            if (p.alpha <= 0 || p.x < -50 || p.x > this.width + 50 || p.y < -50 || p.y > this.height + 50) {
+                this.particles.splice(i, 1);
+                continue;
+            }
+            // Get or create sprite
+            const key = `${p.color}_${size}`;
+            if (!this.particleSprites.has(key)) {
+                const cvs = document.createElement('canvas');
+                cvs.width = size * 2;
+                cvs.height = size * 2;
+                const sctx = cvs.getContext('2d');
+                sctx.fillStyle = `rgb(${p.color})`;
+                sctx.beginPath();
+                sctx.arc(size, size, size, 0, Math.PI * 2);
+                sctx.fill();
+                this.particleSprites.set(key, cvs);
+            }
+            this.ctx.save();
+            this.ctx.globalAlpha = p.alpha;
+            this.ctx.drawImage(this.particleSprites.get(key), p.x - size, p.y - size);
+            this.ctx.restore();
+        }
+        
+        // Add new particles from brush positions
+        const numPerPosition = particleCfg.numPerPosition ?? 2.5;
+        const velMin = particleCfg.velocity?.min ?? 1;
+        const velMax = particleCfg.velocity?.max ?? 5;
+        const colors = particleCfg.colors ?? ['234,130,11', '141,76,12', '255,255,255'];
+        const startAlpha = particleCfg.startAlpha ?? 1;
+        const maxParticles = particleCfg.maxParticles ?? 100;
+        for (const pos of this.brushPositions) {
+            const baseNum = Math.floor(numPerPosition);
+            const extra = Math.random() < (numPerPosition - baseNum) ? 1 : 0;
+            const numParticles = Math.max(1, baseNum + extra);
+            for (let i = 0; i < numParticles; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const velocity = velMin + Math.random() * (velMax - velMin);
+                this.particles.push({
+                    x: pos.x,
+                    y: pos.y,
+                    vx: Math.cos(angle) * velocity,
+                    vy: Math.sin(angle) * velocity,
+                    color: colors[Math.floor(Math.random() * colors.length)],
+                    alpha: startAlpha
+                });
+            }
+        }
+        // Keep max particles
+        while (this.particles.length > maxParticles) {
+            this.particles.shift();
+        }
+        this.brushPositions = [];
+        
         // Update debug info (throttled for performance)
         if (this.frameCounter % (BrushConfig.performance?.debugUpdateInterval || 15) === 0) {
             this.updateDebugInfo();
@@ -710,6 +777,7 @@ class ThermalBrush {
         while (this.positionQueue.length > 0 && processed < this.maxPositionsPerFrame) {
             const pos = this.positionQueue.shift();
             this.applyBrush(pos.x, pos.y);
+            this.brushPositions.push(pos);
             
             if (window.bg && typeof window.bg.onBrushPosition === 'function') {
                 window.bg.onBrushPosition(pos);

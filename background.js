@@ -77,9 +77,10 @@
       this.mouseX = 0;
       this.mouseY = 0;
   this._lastUserPos = null;
-  this.topLayerCircles = [];
+      this.topLayerCircles = [];
       this.backgroundImageData = null;
   this._lastBrushPos = null;
+  this.brushPositions = [];
   // Contour overlay (offscreen canvas)
   this._contourCanvas = document.createElement('canvas');
   this._contourCanvas.width = this.width;
@@ -159,12 +160,23 @@
       // Listen on document so we still track mouse when another canvas overlays this one
       document.addEventListener('mousemove', (e) => {
         const rect = this.canvas.getBoundingClientRect();
-        // Only update interaction coordinates from the mouse in 'circles' mode
-        if (this.interactionMode === 'circles') {
+        // Update interaction coordinates for both modes
+        if (this.interactionMode === 'circles' || this.interactionMode === 'thermalBrush') {
           this.mouseX = e.clientX - rect.left;
           this.mouseY = e.clientY - rect.top;
         }
-        // In 'thermalBrush' mode, the brush drives us; don't push into the brush here to avoid double drawing
+        // In 'thermalBrush' mode, the brush drives us
+        if (this.interactionMode === 'thermalBrush' && window.thermalBrush) {
+          const pos = { x: this.mouseX, y: this.mouseY };
+          if (typeof window.thermalBrush.addLinePositions === 'function' && this._lastUserPos) {
+            window.thermalBrush.addLinePositions(this._lastUserPos, pos);
+          } else if (typeof window.thermalBrush.enqueuePosition === 'function') {
+            window.thermalBrush.enqueuePosition(pos);
+          }
+          this._lastUserPos = pos;
+          this.onBrushPosition(pos);
+        }
+        // In 'circles' mode, push to thermalBrush if available
         if (this.interactionMode === 'circles' && window.thermalBrush) {
           const pos = { x: this.mouseX, y: this.mouseY };
           if (typeof window.thermalBrush.addLinePositions === 'function' && this._lastUserPos) {
@@ -444,6 +456,7 @@
     onBrushPosition(pos) {
       if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
       this._lastBrushPos = { x: pos.x, y: pos.y };
+      this.brushPositions.push(pos);
       // Reuse same interaction math by mapping brush position to our mouse coords
       this.mouseX = pos.x;
       this.mouseY = pos.y;
@@ -560,22 +573,25 @@
   };
 
   CustomBackground.prototype.updateContourOverlay = function(params) {
+    // Update the contour overlay with thermal data, max data, and persistent mask
+    // This function renders a grayscale representation of the thermal simulation
+    // onto an offscreen canvas, which is then composited in _renderFrame
     if (!params) return;
     const {
-      thermalData,
-      maxData,
-      persistentMask,
-      width,
-      height,
-      threshold,
-      step = 1,
-      thresholdColor = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.contour?.thresholdColor) ? BrushConfig.visual.contour.thresholdColor : 'red',
+      thermalData,  // 1D array of thermal values (width * height)
+      maxData,      // 1D array of maximum thermal values seen at each pixel
+      persistentMask, // 1D boolean array indicating persistent pixels
+      width,        // Canvas width
+      height,       // Canvas height
+      threshold,    // Threshold value (not used in current grayscale mode)
+      step = 1,     // Sampling step for normalization (sparsely sample for performance)
       persistentColor = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.contour?.persistentColor) ? BrushConfig.visual.contour.persistentColor : 'black'
     } = params;
 
+    // Validate required inputs
     if (!thermalData || !width || !height || typeof threshold !== 'number') return;
 
-    // Ensure offscreen matches size
+    // Ensure offscreen contour canvas matches the current size
     if (this._contourCanvas.width !== width || this._contourCanvas.height !== height) {
       this._contourCanvas.width = width;
       this._contourCanvas.height = height;
@@ -583,25 +599,24 @@
     }
 
     const ctx = this._contourCtx;
-    ctx.clearRect(0, 0, width, height);
 
+    // Safe step for sparse sampling (used in normalization to avoid full scan)
     const safeStep = Math.max(1, step | 0);
 
-    // Pull grayscale mapping params from config
+    // Retrieve contour visualization configuration from BrushConfig
     const contourCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.contour) ? BrushConfig.visual.contour : {};
-    const thrMode = contourCfg.thresholdMode || 'color';
-    const perMode = contourCfg.persistentMode || 'grayscale';
-    const gamma = Math.max(0.001, contourCfg.grayGamma ?? 1.0);
-    const grayMin = Math.max(0, Math.min(255, contourCfg.grayMin ?? 0));
-    const grayMax = Math.max(grayMin, Math.min(255, contourCfg.grayMax ?? 255));
-    const maxCeil = Math.max(0, contourCfg.grayMaxCeiling ?? 0);
+    const thrMode = contourCfg.thresholdMode || 'color';  // Mode for threshold rendering ('grayscale' or 'color')
+    const perMode = contourCfg.persistentMode || 'grayscale'; // Mode for persistent rendering
+    const gamma = Math.max(0.001, contourCfg.grayGamma ?? 1.0); // Gamma correction for grayscale
+    const grayMin = Math.max(0, Math.min(255, contourCfg.grayMin ?? 0)); // Min grayscale value
+    const grayMax = Math.max(grayMin, Math.min(255, contourCfg.grayMax ?? 255)); // Max grayscale value
+    const maxCeil = Math.max(0, contourCfg.grayMaxCeiling ?? 0); // Ceiling for max normalization
 
-    // Compute normalization for max data
-    // If maxData exists, map its range to [0, 1], with optional ceiling
+    // Compute normalization factor for maxData to map [0, maxNorm] to [0, 1]
+    // Sample sparsely to reduce computation cost
     let maxNorm = 1.0;
     if (maxData) {
       let m = 0;
-      // sample sparsely with safeStep to reduce cost
       for (let y = 0; y < height; y += safeStep) {
         const row = y * width;
         for (let x = 0; x < width; x += safeStep) {
@@ -609,51 +624,57 @@
           if (v > m) m = v;
         }
       }
-      if (maxCeil > 0) m = Math.min(m, maxCeil);
-      maxNorm = m || 1;
+      if (maxCeil > 0) m = Math.min(m, maxCeil); // Apply ceiling if configured
+      maxNorm = m || 1; // Avoid division by zero
     }
 
-    // Render threshold hits only in grayscale if configured, otherwise skip drawing threshold color
-    if (thrMode === 'grayscale' && maxData) {
-      for (let y = 0; y < height; y += safeStep) {
-        const row = y * width;
-        for (let x = 0; x < width; x += safeStep) {
-          const idx = row + x;
-          const t = thermalData[idx];
-          if (t >= threshold) {
+    // Create a new ImageData object to hold pixel data for the entire canvas
+    const imageData = ctx.createImageData(width, height);
+    const data = imageData.data; // Uint8ClampedArray of RGBA values (4 per pixel)
+
+    // Process every pixel to set its color based on contour rules
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x; // Linear index into thermal/max/persistent arrays
+        const dataIdx = idx * 4;   // Index into ImageData (4 bytes per pixel: R, G, B, A)
+        let r = 0, g = 0, b = 0, a = 0; // Default to transparent
+
+        // Priority: persistent mask overrides other rendering
+        if (persistentMask && persistentMask[idx]) {
+          if (perMode === 'grayscale' && maxData) {
+            // Render persistent pixels in grayscale based on maxData
             const v = maxData[idx];
-            let norm = Math.max(0, Math.min(1, v / maxNorm));
-            if (gamma !== 1.0) norm = Math.pow(norm, gamma);
-            const gray = Math.floor(grayMin + (grayMax - grayMin) * norm);
-            ctx.fillStyle = `rgb(${gray},${gray},${gray})`;
-            ctx.fillRect(x, y, 1, 1);
+            let norm = Math.max(0, Math.min(1, v / maxNorm)); // Normalize to [0,1]
+            if (gamma !== 1.0) norm = Math.pow(norm, gamma);   // Apply gamma
+            const gray = Math.floor(grayMin + (grayMax - grayMin) * norm); // Map to grayscale range
+            r = g = b = gray;
+            a = 255; // Opaque
+          } else {
+            // Render persistent pixels in solid color (assumed 'black' for simplicity)
+            r = g = b = 0; // Black
+            a = 255;
           }
+        } else if (thrMode === 'grayscale' && maxData) {
+          // Render non-persistent pixels in grayscale based on maxData
+          const v = maxData[idx];
+          let norm = Math.max(0, Math.min(1, v / maxNorm));
+          if (gamma !== 1.0) norm = Math.pow(norm, gamma);
+          const gray = Math.floor(grayMin + (grayMax - grayMin) * norm);
+          r = g = b = gray;
+          a = 255;
         }
-      }
-    }
-    ctx.globalAlpha = 1.0;
+        // If no conditions met, pixel remains transparent (r=g=b=a=0)
 
-    // Draw persistent mask if provided; shade by per-pixel maxData if configured
-    if (persistentMask) {
-      for (let y = 0; y < height; y += safeStep) {
-        const row = y * width;
-        for (let x = 0; x < width; x += safeStep) {
-          const idx = row + x;
-          if (persistentMask[idx]) {
-            if (perMode === 'grayscale' && maxData) {
-              const v = maxData[idx];
-              let norm = Math.max(0, Math.min(1, v / maxNorm));
-              if (gamma !== 1.0) norm = Math.pow(norm, gamma);
-              const gray = Math.floor(grayMin + (grayMax - grayMin) * norm);
-              ctx.fillStyle = `rgb(${gray},${gray},${gray})`;
-            } else {
-              ctx.fillStyle = persistentColor;
-            }
-            ctx.fillRect(x, y, 1, 1);
-          }
-        }
+        // Set the RGBA values in the ImageData array
+        data[dataIdx] = r;
+        data[dataIdx + 1] = g;
+        data[dataIdx + 2] = b;
+        data[dataIdx + 3] = a;
       }
     }
+
+    // Apply the updated pixel data to the contour canvas
+    ctx.putImageData(imageData, 0, 0);
   };
 
   // UMD-style export to window
