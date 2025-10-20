@@ -83,7 +83,59 @@ class ThermalBrush {
         // Always initialize CPU components (needed for fallback)
         this.brush = this.createFeatheredBrush(this.brushRadius);
         this.initializeGaussianKernel();
-        
+    // Precompute diffused brush variants (Gaussian-blur of base kernel)
+    this.maxPositionsPerFrame = Math.max(1, BrushConfig.performance?.maxPositionsPerFrame || 1);
+    this.brushVariants = [];
+    this.brushVariantRadii = [];
+
+    // Precompute per-step decay factor so we can bake it into brush variants
+    const configuredDecay = (BrushConfig.thermal && typeof BrushConfig.thermal.decayRate === 'number') ? BrushConfig.thermal.decayRate : 1.0;
+    this._configuredDecay = configuredDecay;
+    this._stepDecay = Math.pow(configuredDecay, 1 / Math.max(1, this.maxPositionsPerFrame));
+
+    try {
+            const base = this.brush;
+
+            // We'll create variants by computing a single padded separable gaussian blur of the base kernel
+            // and linearly interpolating intermediate variants between the base and the blurred result.
+            if (!this.gaussianKernel) this.initializeGaussianKernel();
+            // Create one maximum-blur variant (single pass with padding equal to kernel radius)
+            const blurredMax = this.createBlurredVariant(base);
+            const outSize = blurredMax.size;
+
+            // Create padded base array matching outSize
+            const pad = Math.floor((outSize - base.size) / 2);
+            const basePadded = new Float32Array(outSize * outSize);
+            for (let by = 0; by < base.size; by++) {
+                for (let bx = 0; bx < base.size; bx++) {
+                    basePadded[(by + pad) * outSize + (bx + pad)] = base.data[by * base.size + bx];
+                }
+            }
+
+            for (let i = 0; i < this.maxPositionsPerFrame; i++) {
+                const t = (this.maxPositionsPerFrame === 1) ? 0 : (i / (this.maxPositionsPerFrame - 1));
+                // Interpolate between basePadded and blurredMax.data
+                const data = new Float32Array(outSize * outSize);
+                for (let k = 0; k < data.length; k++) {
+                    data[k] = basePadded[k] * (1 - t) + blurredMax.data[k] * t;
+                }
+
+                // Bake step-decay scaling into the precomputed variant so we don't need to
+                // multiply the entire thermal field per-position in the animate loop.
+                const variantDecayScale = Math.pow(this._stepDecay, i);
+                if (variantDecayScale !== 1.0) {
+                    for (let k = 0; k < data.length; k++) data[k] *= variantDecayScale;
+                }
+
+                this.brushVariants.push({ data, size: outSize });
+                this.brushVariantRadii.push(Math.floor((outSize - 1) / 2));
+            }
+        } catch (e) {
+            // fallback: single variant equals base
+            this.brushVariants = [ this.brush ];
+            this.brushVariantRadii = [ this.brushRadius ];
+        }
+
         // Setup events
         this.setupEvents();
         
@@ -142,6 +194,60 @@ class ThermalBrush {
             }
         }
         return { data: brush, size };
+    }
+
+    // Create a blurred variant of a square brush kernel using the precomputed separable gaussian kernel
+    // Performs a single padded separable convolution and returns the padded blurred result
+    createBlurredVariant(baseBrush) {
+        // baseBrush: { data: Float32Array, size: number }
+        const baseSize = baseBrush.size;
+        const kernel = this.gaussianKernel;
+        const kRadius = Math.floor(kernel.length / 2);
+
+        // Pad by kernel radius so blurred output can expand naturally
+        const pad = kRadius;
+        const outSize = baseSize + pad * 2;
+
+        // Create padded source and copy base brush into the center
+        const src = new Float32Array(outSize * outSize);
+        for (let by = 0; by < baseSize; by++) {
+            for (let bx = 0; bx < baseSize; bx++) {
+                src[(by + pad) * outSize + (bx + pad)] = baseBrush.data[by * baseSize + bx];
+            }
+        }
+
+        const temp = new Float32Array(outSize * outSize);
+        const out = new Float32Array(outSize * outSize);
+
+        // Horizontal pass: src -> temp
+        for (let y = 0; y < outSize; y++) {
+            for (let x = 0; x < outSize; x++) {
+                let s = 0;
+                const startX = Math.max(0, x - kRadius);
+                const endX = Math.min(outSize - 1, x + kRadius);
+                for (let nx = startX; nx <= endX; nx++) {
+                    const kIdx = nx - x + kRadius;
+                    s += src[y * outSize + nx] * kernel[kIdx];
+                }
+                temp[y * outSize + x] = s;
+            }
+        }
+
+        // Vertical pass: temp -> out
+        for (let y = 0; y < outSize; y++) {
+            for (let x = 0; x < outSize; x++) {
+                let s = 0;
+                const startY = Math.max(0, y - kRadius);
+                const endY = Math.min(outSize - 1, y + kRadius);
+                for (let ny = startY; ny <= endY; ny++) {
+                    const kIdx = ny - y + kRadius;
+                    s += temp[ny * outSize + x] * kernel[kIdx];
+                }
+                out[y * outSize + x] = s;
+            }
+        }
+
+        return { data: out, size: outSize };
     }
     
     setupEvents() {
@@ -334,34 +440,44 @@ class ThermalBrush {
                 this.applyBrushCPU(x, y);
             }
         } else {
-            // CPU path
-            this.applyBrushCPU(x, y);
+            // CPU path: pick a precomputed variant based on current queue length or a round-robin index
+            // Caller (animate) will pass variant -> fallback here to base
+            this.applyBrushCPU(x, y, this.brush);
         }
     }
     
-    applyBrushCPU(x, y) {
-        const brushSize = this.brushRadius * 2 + 1;
-        const startX = Math.max(0, x - this.brushRadius);
-        const endX = Math.min(this.width, x + this.brushRadius + 1);
-        const startY = Math.max(0, y - this.brushRadius);
-        const endY = Math.min(this.height, y + this.brushRadius + 1);
-        
+    applyBrushCPU(x, y, brushObj) {
+        // brushObj is expected to be { data: Float32Array, size: number }
+        const brush = brushObj || this.brush;
+        const brushSizeLocal = brush.size;
+        // Derive local radius from the brush size
+        const localRadius = Math.floor((brushSizeLocal - 1) / 2);
+
+        // Compute bounds using localRadius so larger/smaller variants are applied correctly
+        const startX = Math.max(0, x - localRadius);
+        const endX = Math.min(this.width, x + localRadius + 1);
+        const startY = Math.max(0, y - localRadius);
+        const endY = Math.min(this.height, y + localRadius + 1);
+
         for (let cy = startY; cy < endY; cy++) {
             for (let cx = startX; cx < endX; cx++) {
-                const bx = cx - x + this.brushRadius;
-                const by = cy - y + this.brushRadius;
-                
-                if (bx >= 0 && bx < brushSize && by >= 0 && by < brushSize) {
-                    const brushIndex = by * brushSize + bx;
+                const bx = cx - x + localRadius;
+                const by = cy - y + localRadius;
+
+                if (bx >= 0 && bx < brushSizeLocal && by >= 0 && by < brushSizeLocal) {
+                    const brushIndex = by * brushSizeLocal + bx;
                     const canvasIndex = cy * this.width + cx;
-                    this.thermalData[canvasIndex] += this.brush.data[brushIndex] * this.brushIntensity;
+                    // Apply brush influence scaled by configured intensity
+                    this.thermalData[canvasIndex] += brush.data[brushIndex] * this.brushIntensity;
                 }
             }
         }
-        
-        // Center dot
+
+        // Center dot: ensure we still use the exact x,y canvas index
+        if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
             const centerIndex = y * this.width + x;
             this.thermalData[centerIndex] += this.brushIntensity * this.centerMultiplier;
+        }
     }
     
     flushBrushBatch() {
@@ -370,18 +486,24 @@ class ThermalBrush {
         try {
             // Process all batched brush applications
             for (const brush of this.brushBatch) {
+                // Determine radius from variant if present
+                const variantIdx = (typeof brush.variant === 'number') ? Math.max(0, Math.min(this.brushVariants.length - 1, brush.variant)) : 0;
+                const variantRadius = this.brushVariantRadii[variantIdx] || this.brushRadius;
                 this.gpuCompute.applyBrush(brush.x, brush.y, {
-                    brushRadius: this.brushRadius,
+                    brushRadius: variantRadius,
                     brushIntensity: this.brushIntensity,
-                        centerMultiplier: this.centerMultiplier
+                    centerMultiplier: this.centerMultiplier,
+                    variantIndex: variantIdx
                 });
             }
         } catch (error) {
             console.warn('GPU batch flush failed, falling back to CPU:', error);
             this.useGPU = false;
             // Process remaining batch with CPU
-            for (const brush of this.brushBatch) {
-                this.applyBrushCPU(brush.x, brush.y);
+            for (const b of this.brushBatch) {
+                const vi = (typeof b.variant === 'number') ? Math.max(0, Math.min(this.brushVariants.length - 1, b.variant)) : 0;
+                const vb = this.brushVariants[vi] || this.brush;
+                this.applyBrushCPU(b.x, b.y, vb);
             }
         }
         
@@ -530,9 +652,9 @@ class ThermalBrush {
                 }
             }
             
-            // if (v < thr-0.05) {
-            //     this.maxMolten[i] = 0;
-            // }
+            if (v < thr) {
+                this.maxMolten[i] = 0;
+            }
 
 
         }
@@ -776,12 +898,25 @@ class ThermalBrush {
         let processed = 0;
         while (this.positionQueue.length > 0 && processed < this.maxPositionsPerFrame) {
             const pos = this.positionQueue.shift();
-            this.applyBrush(pos.x, pos.y);
+            // Select variant based on processed index (clamped)
+            const variantIndex = Math.min(processed, this.brushVariants.length - 1);
+            const variantBrush = this.brushVariants[variantIndex] || this.brush;
+
+            if (this.useGPU && this.gpuCompute && this.gpuCompute.supported) {
+                // Include variant index so GPU flush can decide behavior if desired
+                this.brushBatch.push({ x: pos.x, y: pos.y, variant: variantIndex });
+                if (this.brushBatch.length >= this.maxBatchSize) this.flushBrushBatch();
+            } else {
+                // CPU path: apply using the precomputed variant
+                this.applyBrushCPU(pos.x, pos.y, variantBrush);
+            }
+
             this.brushPositions.push(pos);
-            
+
             if (window.bg && typeof window.bg.onBrushPosition === 'function') {
                 window.bg.onBrushPosition(pos);
             }
+
             processed++;
         }
         
@@ -789,9 +924,11 @@ class ThermalBrush {
         if (this.useGPU) {
             this.flushBrushBatch();
         }
-        
-        // Apply thermal decay
-        this.applyThermalDecay();
+
+        // Always apply the configured full-frame decay once per frame (now handled centrally in animate)
+        if (this._configuredDecay && this._configuredDecay !== 1.0) {
+            this.applyThermalDecay();
+        }
         
         // Apply blur every few frames
         if (this.frameCounter % BrushConfig.thermal.blurInterval === 0) {

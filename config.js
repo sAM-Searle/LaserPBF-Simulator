@@ -9,7 +9,7 @@ const BrushConfig = {
     // Brush properties
     brush: {
         radius: 19,
-        intensity: 1,
+        intensity: 0.08,
         threshold: 0.95
     },
     
@@ -17,27 +17,27 @@ const BrushConfig = {
     thermal: {
         // Controls blur applied to the thermal field (affects smoothness/perf)
         blurSigma: 10,
-        blurRadius: 9,
+        blurRadius: 19,
         // How often to apply the blur (frames). 1 = every frame.
         blurInterval: 1,
         // Per-frame decay applied to thermal values (0..1). Values <1 slowly fade.
-        decayRate: 0.99
+        decayRate: 0.95
     },
     
     // Performance settings
     performance: {
-        maxPositionsPerFrame: 1,    // Reduced for phones
+        maxPositionsPerFrame: 20,    // Reduced for phones
         contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
-        contourInterval: 3,          // Frames between contour overlay updates (increase to lighten CPU)
+        contourInterval: 0,          // Frames between contour overlay updates (increase to lighten CPU)
         debugUpdateInterval: 30,     // Update debug info every N frames
         debugSampleStep: 1,          // Sample every Nth pixel for debug stats to reduce cost
         
         // GPU acceleration settings
         useGPU: true,               // Enable GPU acceleration if available
-        gpuBatchSize: 8,         // Number of brush applications to batch for GPU
+        gpuBatchSize: 20,         // Number of brush applications to batch for GPU
         gpuFallback: true,          // Automatically fallback to CPU if GPU fails
-        gpuSyncInterval: 2,     // Frames between GPU->CPU thermal sync (higher = less CPU but more latency)
-        gpuMaskSyncInterval: 6,     // Frames between GPU->CPU max/persistent syncs
+        gpuSyncInterval: 1,     // Frames between GPU->CPU thermal sync (higher = less CPU but more latency)
+        gpuMaskSyncInterval: 1,     // Frames between GPU->CPU max/persistent syncs
         pauseBackgroundOnSlowCPU: false, // If true, pause animated background when CPU frames are slow
         slowCpuFrameMs: 22          // Threshold in ms to consider frame slow (about half refresh @ 60Hz)
     },
