@@ -39,17 +39,13 @@ class GPUCompute {
     // Create textures for thermal data (ping-pong buffers for blur)
     this.thermalTexA = this.createFloatTexture(this.width, this.height);
     this.thermalTexB = this.createFloatTexture(this.width, this.height);
-    // Ping-pong for max tracking and persistent mask to avoid read-write hazards
-    this.maxTexA = this.createFloatTexture(this.width, this.height);
-    this.maxTexB = this.createFloatTexture(this.width, this.height);
+    // Ping-pong for persistent mask to avoid read-write hazards
     this.persistentTexA = this.createByteTexture(this.width, this.height);
     this.persistentTexB = this.createByteTexture(this.width, this.height);
         
     // Framebuffers
     this.fbA = this.createFramebuffer(this.thermalTexA);
     this.fbB = this.createFramebuffer(this.thermalTexB);
-    this.maxFbA = this.createFramebuffer(this.maxTexA);
-    this.maxFbB = this.createFramebuffer(this.maxTexB);
     this.persistentFbA = this.createFramebuffer(this.persistentTexA);
     this.persistentFbB = this.createFramebuffer(this.persistentTexB);
         
@@ -65,8 +61,7 @@ class GPUCompute {
         
         checkFramebuffer(this.fbA, 'Thermal A');
         checkFramebuffer(this.fbB, 'Thermal B');
-        checkFramebuffer(this.maxFbA, 'Max A');
-        checkFramebuffer(this.maxFbB, 'Max B');
+    // Max tracking removed - using CPU fallback for max tracking
         checkFramebuffer(this.persistentFbA, 'Persistent A');
         checkFramebuffer(this.persistentFbB, 'Persistent B');
 
@@ -76,7 +71,7 @@ class GPUCompute {
             gl.clearColor(0, 0, 0, 0);
             gl.clear(gl.COLOR_BUFFER_BIT);
         };
-        [this.fbA, this.fbB, this.maxFbA, this.maxFbB, this.persistentFbA, this.persistentFbB].forEach(clearFb);
+    [this.fbA, this.fbB, this.persistentFbA, this.persistentFbB].forEach(clearFb);
     }
     
     createFloatTexture(w, h) {
@@ -200,20 +195,7 @@ class GPUCompute {
             }
         `);
         
-        // Max tracking shader
-        const maxTrackingFragShader = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
-            precision highp float;
-            uniform sampler2D u_thermalData;
-            uniform sampler2D u_maxData;
-            in vec2 v_texCoord;
-            out float outColor;
-            
-            void main() {
-                float current = texture(u_thermalData, v_texCoord).r;
-                float maxVal = texture(u_maxData, v_texCoord).r;
-                outColor = max(current, maxVal);
-            }
-        `);
+        // Max tracking shader removed - max tracking will be performed on CPU
         
         // Persistent mask shader
         const persistentFragShader = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
@@ -235,7 +217,7 @@ class GPUCompute {
         this.brushProgram = this.createProgram(vertexShader, brushFragShader);
         this.blurProgram = this.createProgram(vertexShader, blurFragShader);
         this.decayProgram = this.createProgram(vertexShader, decayFragShader);
-        this.maxTrackingProgram = this.createProgram(vertexShader, maxTrackingFragShader);
+    // this.maxTrackingProgram intentionally omitted
         this.persistentProgram = this.createProgram(vertexShader, persistentFragShader);
 
         // Particle update shaders (X and Y components in separate passes)
@@ -482,12 +464,7 @@ class GPUCompute {
             decayRate: gl.getUniformLocation(this.decayProgram, 'u_decayRate')
         };
         
-        // Max tracking uniforms
-        gl.useProgram(this.maxTrackingProgram);
-        this.maxTrackingUniforms = {
-            thermalData: gl.getUniformLocation(this.maxTrackingProgram, 'u_thermalData'),
-            maxData: gl.getUniformLocation(this.maxTrackingProgram, 'u_maxData')
-        };
+        // Max tracking removed: handled on CPU; no GPU uniforms to set here.
         
         // Persistent uniforms
         gl.useProgram(this.persistentProgram);
@@ -619,7 +596,8 @@ class GPUCompute {
         gl.uniform2f(this.brushUniforms.brushPos, x, y);
         gl.uniform1f(this.brushUniforms.brushRadius, config.brushRadius);
         gl.uniform1f(this.brushUniforms.brushIntensity, config.brushIntensity);
-        gl.uniform1f(this.brushUniforms.centerMultiplier, config.centerMultiplier);
+    const cm = (config && typeof config.centerMultiplier === 'number') ? config.centerMultiplier : 1.0;
+    gl.uniform1f(this.brushUniforms.centerMultiplier, cm);
         gl.uniform2f(this.brushUniforms.resolution, this.width, this.height);
         
         // Bind input texture
@@ -690,28 +668,8 @@ class GPUCompute {
     }
     
     updateMaxTracking() {
-        if (!this.supported) return false;
-        
-        const gl = this.gl;
-        gl.useProgram(this.maxTrackingProgram);
-        gl.bindVertexArray(this.vao);
-        
-        gl.uniform1i(this.maxTrackingUniforms.thermalData, 0);
-        gl.uniform1i(this.maxTrackingUniforms.maxData, 1);
-        
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, this.thermalTexA);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, this.maxTexA);
-        
-        // Write to B then swap so A holds latest
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.maxFbB);
-        gl.viewport(0, 0, this.width, this.height);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-        [this.maxTexA, this.maxTexB] = [this.maxTexB, this.maxTexA];
-        [this.maxFbA, this.maxFbB] = [this.maxFbB, this.maxFbA];
-        
-        return true;
+        // Max tracking is handled on CPU now; GPU no-op
+        return false;
     }
     
     updatePersistentMask(threshold) {
@@ -771,15 +729,8 @@ class GPUCompute {
     }
     
     downloadMaxData() {
-        if (!this.supported) return null;
-        
-        const gl = this.gl;
-        const data = new Float32Array(this.width * this.height);
-        
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.maxFbA);
-        gl.readPixels(0, 0, this.width, this.height, gl.RED, gl.FLOAT, data);
-        
-        return data;
+        // GPU max tracking removed; return null to indicate not available
+        return null;
     }
     
     downloadPersistentData() {
@@ -799,8 +750,8 @@ class GPUCompute {
         
         const gl = this.gl;
         
-        // Clear all textures
-        [this.fbA, this.fbB, this.maxFbA, this.maxFbB, this.persistentFbA, this.persistentFbB].forEach(fb => {
+        // Clear all textures (max tracking removed)
+        [this.fbA, this.fbB, this.persistentFbA, this.persistentFbB].forEach(fb => {
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
             gl.clearColor(0, 0, 0, 0);
             gl.clear(gl.COLOR_BUFFER_BIT);

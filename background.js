@@ -1,4 +1,3 @@
-// Reusable animated background that renders a bumpy metallic look with interactive mouse push
 // Usage: new CustomBackground({ canvasId: 'bgCanvas', animate: true })
 (function(){
   class CustomBackground {
@@ -45,6 +44,23 @@
       this._region = { kind: 'circle', cx, cy, r: minDim * rr };
     }
 
+    // Public API
+    this.start = () => {
+      if (this._raf) return;
+      const loop = () => {
+        this._raf = requestAnimationFrame(loop);
+        this._tick();
+      };
+      this._raf = requestAnimationFrame(loop);
+    };
+
+    this.stop = () => {
+      if (this._raf) {
+        cancelAnimationFrame(this._raf);
+        this._raf = null;
+      }
+    };
+
     this._inRegion = (x, y) => {
       const R = this._region;
       if (R.kind === 'rect') {
@@ -73,20 +89,30 @@
       return pt;
     };
 
-      // State
-      this.mouseX = 0;
-      this.mouseY = 0;
+    // State
+    this.mouseX = 0;
+    this.mouseY = 0;
   this._lastUserPos = null;
+  // Pointer state: true while pointer is pressed (mouse down / touch active)
+  this._pointerDown = false;
       this.topLayerCircles = [];
       this.backgroundImageData = null;
   this._lastBrushPos = null;
   this.brushPositions = [];
   // Contour overlay (offscreen canvas)
-  this._contourCanvas = document.createElement('canvas');
-  this._contourCanvas.width = this.width;
-  this._contourCanvas.height = this.height;
-  this._contourCtx = this._contourCanvas.getContext('2d');
+// ...existing code...
+    // in the constructor near contour canvas init
+    this._contourCanvas = document.createElement('canvas');
+    this._contourCanvas.width = this.width;
+    this._contourCanvas.height = this.height;
+    this._contourCtx = this._contourCanvas.getContext('2d');
+   this._contourImageData = this._contourCtx.createImageData(this.width, this.height);
+   //initialise normalisation cache _prepareContourConfig
+   this._contourCache = null;
+   this._prepareContourConfig(bgCfg.contour);
 
+
+// ...existing code...
   // Sprite caches for prerendered top-layer circles
   this._spritesCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.background?.sprites) ? BrushConfig.background.sprites : { enabled: true, radiusStep: 0.5, grayStep: 5 };
   this._spriteCacheTopShadow = new Map(); // key: radiusQ|outerScale|shadow params
@@ -97,54 +123,6 @@
       this._frameCount = 0;
       this._lastTime = performance.now();
       this._raf = null;
-
-      // Init
-      this._attachMouse();
-      this._initTopLayer();
-      // Optional GPU particle path (deferred init because GPUCompute loads after background)
-      this._gpuParticlesDesired = !!(BrushConfig?.background?.useGpuParticles) && (this.mcfg.deleteChance ?? 0) === 0;
-      this._gpuParticlesEnabled = false;
-      this._gpuParticleSyncInterval = Math.max(1, BrushConfig?.background?.gpuParticleSyncInterval || 2);
-      this._gpuParticleFrame = 0;
-  this._renderTopOnGPU = !!(BrushConfig?.background?.renderTopOnGPU);
-  // Offscreen canvas to hold GPU-rendered particles (we'll draw GPU canvas directly)
-  this._gpuCanvasLayer = null;
-      // Defer actual init to _tryInitGpuParticles
-      this._drawBackground(); // prerender static BG into ImageData
-
-      if (this.shouldAnimate) this.start();
-    }
-
-    // Public API
-    start() {
-      if (this._raf) return;
-      const loop = () => {
-        this._raf = requestAnimationFrame(loop);
-        this._tick();
-      };
-      this._raf = requestAnimationFrame(loop);
-    }
-
-    stop() {
-      if (this._raf) {
-        cancelAnimationFrame(this._raf);
-        this._raf = null;
-      }
-    }
-
-  resize(width, height) {
-      if (width === this.width && height === this.height) return;
-      this.stop();
-      this.canvas.width = width;
-      this.canvas.height = height;
-      this.width = width;
-      this.height = height;
-      // Rebuild
-      this.topLayerCircles = [];
-      this._initTopLayer();
-      // Clear sprite caches (radius/gray potentially different now)
-      if (this._spriteCacheTopShadow) this._spriteCacheTopShadow.clear();
-      if (this._spriteCacheTopMain) this._spriteCacheTopMain.clear();
       this._drawBackground();
       if (this.shouldAnimate) this.start();
     }
@@ -159,37 +137,30 @@
     _attachMouse() {
       // Listen on document so we still track mouse when another canvas overlays this one
       document.addEventListener('mousemove', (e) => {
+        // Only handle mouse movement when pointer is pressed (ignore hover)
+        if (!this._pointerDown && (e.buttons === 0)) return;
+
         const rect = this.canvas.getBoundingClientRect();
-        // Update interaction coordinates for both modes
-        if (this.interactionMode === 'circles' || this.interactionMode === 'thermalBrush') {
-          this.mouseX = e.clientX - rect.left;
-          this.mouseY = e.clientY - rect.top;
-        }
-        // In 'thermalBrush' mode, the brush drives us
-        if (this.interactionMode === 'thermalBrush' && window.thermalBrush) {
-          const pos = { x: this.mouseX, y: this.mouseY };
-          if (typeof window.thermalBrush.addLinePositions === 'function' && this._lastUserPos) {
-            window.thermalBrush.addLinePositions(this._lastUserPos, pos);
-          } else if (typeof window.thermalBrush.enqueuePosition === 'function') {
-            window.thermalBrush.enqueuePosition(pos);
-          }
-          this._lastUserPos = pos;
-          this.onBrushPosition(pos);
-        }
-        // In 'circles' mode, push to thermalBrush if available
-        if (this.interactionMode === 'circles' && window.thermalBrush) {
-          const pos = { x: this.mouseX, y: this.mouseY };
-          if (typeof window.thermalBrush.addLinePositions === 'function' && this._lastUserPos) {
-            window.thermalBrush.addLinePositions(this._lastUserPos, pos);
-          } else if (typeof window.thermalBrush.enqueuePosition === 'function') {
-            window.thermalBrush.enqueuePosition(pos);
-          }
-          this._lastUserPos = pos;
-        }
+        // Update local interaction coordinates for visuals only
+        this.mouseX = e.clientX - rect.left;
+        this.mouseY = e.clientY - rect.top;
+        // Do NOT forward these positions to ThermalBrush here. ThermalBrush
+        // will call `window.bg.onBrushPosition(pos)` with brush-driven positions.
       });
 
       document.addEventListener('mouseleave', () => {
         this._lastUserPos = null;
+      });
+
+      // Pointer down/up to track pressed state (covers mouse/touch/pen)
+      document.addEventListener('pointerdown', (e) => {
+        this._pointerDown = true;
+      });
+      document.addEventListener('pointerup', (e) => {
+        this._pointerDown = false;
+      });
+      document.addEventListener('pointercancel', (e) => {
+        this._pointerDown = false;
       });
     }
 
@@ -369,10 +340,12 @@
 
     _updateCircles() {
       const pushRadius = this.pushRadius;
+      // Use the last brush-provided position; if none, default to region center
+      const center = this._lastBrushPos ? { x: this._lastBrushPos.x, y: this._lastBrushPos.y } : { x: this._region.cx, y: this._region.cy };
       if (this._gpuParticlesEnabled && this._gpu && this._gpu.supported) {
-        // Advance on GPU using current brush/mouse position as push center
+        // Advance on GPU using brush-driven push center
         const params = {
-          pushCenter: { x: this.mouseX, y: this.mouseY },
+          pushCenter: { x: center.x, y: center.y },
           pushRadius: this.pushRadius,
           baseStrength: this.mcfg.pushStrengthBase ?? 10,
           forceVarMin: this.mcfg.forceVariationMin ?? 0.2,
@@ -400,8 +373,8 @@
       const deleteChance = this.mcfg.deleteChance ?? 0.0;
       const toRemove = [];
       this.topLayerCircles.forEach((circle, i) => {
-        const dx = circle.x - this.mouseX;
-        const dy = circle.y - this.mouseY;
+        const dx = circle.x - center.x;
+        const dy = circle.y - center.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
         if (distance < pushRadius && distance > 0) {
@@ -571,112 +544,116 @@
       this._gpuParticlesEnabled = false;
     }
   };
+CustomBackground.prototype._prepareContourConfig = function(params) {
+  // params may be a contour params object or an update call containing width/height/maxData
+  const p = params || {};
+  const width = p.width || this.width;
+  const height = p.height || this.height;
+  const step = (p.step == null) ? 1 : (p.step | 0) || 1;
+  const maxData = p.maxData || null;
 
-  CustomBackground.prototype.updateContourOverlay = function(params) {
-    // Update the contour overlay with thermal data, max data, and persistent mask
-    // This function renders a grayscale representation of the thermal simulation
-    // onto an offscreen canvas, which is then composited in _renderFrame
-    if (!params) return;
-    const {
-      thermalData,  // 1D array of thermal values (width * height)
-      maxData,      // 1D array of maximum thermal values seen at each pixel
-      persistentMask, // 1D boolean array indicating persistent pixels
-      width,        // Canvas width
-      height,       // Canvas height
-      threshold,    // Threshold value (not used in current grayscale mode)
-      step = 1,     // Sampling step for normalization (sparsely sample for performance)
-      persistentColor = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.contour?.persistentColor) ? BrushConfig.visual.contour.persistentColor : 'black'
-    } = params;
+  // Serialize contour config to detect changes
+  const contourCfgRaw = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.contour) ? BrushConfig.visual.contour : {};
+  const cfgStr = JSON.stringify(contourCfgRaw);
 
-    // Validate required inputs
-    if (!thermalData || !width || !height || typeof threshold !== 'number') return;
-
-    // Ensure offscreen contour canvas matches the current size
-    if (this._contourCanvas.width !== width || this._contourCanvas.height !== height) {
-      this._contourCanvas.width = width;
-      this._contourCanvas.height = height;
-      this._contourCtx = this._contourCanvas.getContext('2d');
-    }
-
-    const ctx = this._contourCtx;
-
-    // Safe step for sparse sampling (used in normalization to avoid full scan)
+  // If cache missing or size/config/step changed, recompute cached static fields
+  const cache = this._contourCache || {};
+  if (!cache._cfgStr || cache._cfgStr !== cfgStr || cache.width !== width || cache.height !== height || cache.step !== step) {
+    const contourCfg = contourCfgRaw;
+    const thrMode = contourCfg.thresholdMode || 'color';
+    const perMode = contourCfg.persistentMode || 'grayscale';
+    const gamma = Math.max(0.001, contourCfg.grayGamma ?? 1.0);
+  const grayMin = Math.max(0, Math.min(255, Number.isFinite(contourCfg.grayMin) ? contourCfg.grayMin : 0));
+  const grayMax = Math.max(grayMin, Math.min(255, Number.isFinite(contourCfg.grayMax) ? contourCfg.grayMax : 255));
+  const alphaScale = Math.max(0, Math.min(1, Number.isFinite(contourCfg.alphaScale) ? contourCfg.alphaScale : 1.0));
+    const maxCeil = Math.max(0, contourCfg.grayMaxCeiling ?? 0);
     const safeStep = Math.max(1, step | 0);
 
-    // Retrieve contour visualization configuration from BrushConfig
-    const contourCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.contour) ? BrushConfig.visual.contour : {};
-    const thrMode = contourCfg.thresholdMode || 'color';  // Mode for threshold rendering ('grayscale' or 'color')
-    const perMode = contourCfg.persistentMode || 'grayscale'; // Mode for persistent rendering
-    const gamma = Math.max(0.001, contourCfg.grayGamma ?? 1.0); // Gamma correction for grayscale
-    const grayMin = Math.max(0, Math.min(255, contourCfg.grayMin ?? 0)); // Min grayscale value
-    const grayMax = Math.max(grayMin, Math.min(255, contourCfg.grayMax ?? 255)); // Max grayscale value
-    const maxCeil = Math.max(0, contourCfg.grayMaxCeiling ?? 0); // Ceiling for max normalization
+    this._contourCache = {
+      _cfgStr: cfgStr,
+      width, height, step: safeStep,
+      thrMode, perMode, gamma, grayMin, grayMax, maxCeil, alphaScale,
+      // intensity range used for normalization; default 0..1 until we compute from data
+      intensityMin: 0,
+      intensityMax: 1,
+      maxNorm: cache.maxNorm || 1
+    };
+  }
 
-    // Compute normalization factor for maxData to map [0, maxNorm] to [0, 1]
-    // Sample sparsely to reduce computation cost
-    let maxNorm = 1.0;
-    if (maxData) {
-      let m = 0;
-      for (let y = 0; y < height; y += safeStep) {
-        const row = y * width;
-        for (let x = 0; x < width; x += safeStep) {
-          const v = maxData[row + x];
-          if (v > m) m = v;
-        }
-      }
-      if (maxCeil > 0) m = Math.min(m, maxCeil); // Apply ceiling if configured
-      maxNorm = m || 1; // Avoid division by zero
+  // If caller provided maxData (dense array of intensities) compute observed max for better normalization
+  if (maxData && maxData.length === width * height) {
+    let maxV = 0;
+    let minV = Infinity;
+    for (let i = 0; i < maxData.length; i++) {
+      const v = maxData[i];
+      if (!Number.isFinite(v)) continue;
+      if (v > maxV) maxV = v;
+      if (v < minV) minV = v;
     }
+    if (!Number.isFinite(minV) || minV === Infinity) minV = 0;
+    if (maxV <= 0) maxV = Math.max(1, cache.maxNorm || 1);
+    this._contourCache.intensityMin = minV;
+    this._contourCache.intensityMax = maxV;
+    this._contourCache.maxNorm = maxV;
+  }
 
-    // Create a new ImageData object to hold pixel data for the entire canvas
-    const imageData = ctx.createImageData(width, height);
-    const data = imageData.data; // Uint8ClampedArray of RGBA values (4 per pixel)
+  return this._contourCache;
+};
+  CustomBackground.prototype.convertIntensityToGray = function (value) {
+    if (value == null) return 0;
+    const cache = this._contourCache || {};
+    const grayMin = Number.isFinite(cache.grayMin) ? cache.grayMin : 0;
+    const grayMax = Number.isFinite(cache.grayMax) ? cache.grayMax : 255;
+    const gamma = Number.isFinite(cache.gamma) ? cache.gamma : 1.0;
+    const iMin = Number.isFinite(cache.intensityMin) ? cache.intensityMin : 0;
+    const iMax = Number.isFinite(cache.intensityMax) ? cache.intensityMax : 1;
 
-    // Process every pixel to set its color based on contour rules
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = y * width + x; // Linear index into thermal/max/persistent arrays
-        const dataIdx = idx * 4;   // Index into ImageData (4 bytes per pixel: R, G, B, A)
-        let r = 0, g = 0, b = 0, a = 0; // Default to transparent
+    let norm = (Number(value) - iMin) / (iMax - iMin);
+    if (!Number.isFinite(norm)) norm = 0;
+    norm = Math.max(0, Math.min(1, norm));
 
-        // Priority: persistent mask overrides other rendering
-        if (persistentMask && persistentMask[idx]) {
-          if (perMode === 'grayscale' && maxData) {
-            // Render persistent pixels in grayscale based on maxData
-            const v = maxData[idx];
-            let norm = Math.max(0, Math.min(1, v / maxNorm)); // Normalize to [0,1]
-            if (gamma !== 1.0) norm = Math.pow(norm, gamma);   // Apply gamma
-            const gray = Math.floor(grayMin + (grayMax - grayMin) * norm); // Map to grayscale range
-            r = g = b = gray;
-            a = 255; // Opaque
-          } else {
-            // Render persistent pixels in solid color (assumed 'black' for simplicity)
-            r = g = b = 0; // Black
-            a = 255;
-          }
-        } else if (thrMode === 'grayscale' && maxData) {
-          // Render non-persistent pixels in grayscale based on maxData
-          const v = maxData[idx];
-          let norm = Math.max(0, Math.min(1, v / maxNorm));
-          if (gamma !== 1.0) norm = Math.pow(norm, gamma);
-          const gray = Math.floor(grayMin + (grayMax - grayMin) * norm);
-          r = g = b = gray;
-          a = 255;
-        }
-        // If no conditions met, pixel remains transparent (r=g=b=a=0)
+    if (gamma !== 1.0) norm = Math.pow(norm, gamma);
 
-        // Set the RGBA values in the ImageData array
-        data[dataIdx] = r;
-        data[dataIdx + 1] = g;
-        data[dataIdx + 2] = b;
-        data[dataIdx + 3] = a;
-      }
-    }
-
-    // Apply the updated pixel data to the contour canvas
-    ctx.putImageData(imageData, 0, 0);
+    const gray = Math.round(grayMin + (grayMax - grayMin) * norm);
+    return Math.max(0, Math.min(255, gray));
   };
 
-  // UMD-style export to window
+  CustomBackground.prototype.updateContourOverlay = function(params) {
+    // Convert thermal/molten intensity data to grayscale and draw to offscreen contour canvas
+    if (!params) return;
+    const width = params.width || this.width;
+    const height = params.height || this.height;
+    const molten = params.molten_pixels || params.maxData || null;
+    // Ensure contour cache is up-to-date (allow maxData to inform normalization)
+    this._prepareContourConfig({ width, height, step: params.step, maxData: molten });
+
+    // Fill the image buffer
+    const out = this._contourImageData.data; // Uint8ClampedArray
+    let di = 0;
+    const n = width * height;
+
+    for (let i = 0; i < n; i++) {
+      const v = molten[i];
+      if (v>0){
+      const gray = this.convertIntensityToGray(v);
+      out[di++] = gray;
+      out[di++] = gray;
+      out[di++] = gray;
+      // Set alpha proportional to normalized intensity (avoid fully opaque black areas)
+      const cache = this._contourCache || {};
+      const iMin = Number.isFinite(cache.intensityMin) ? cache.intensityMin : 0;
+      const iMax = Number.isFinite(cache.intensityMax) ? cache.intensityMax : 1;
+      let alphaNorm = 0;
+      if (iMax > iMin) alphaNorm = Math.max(0, Math.min(1, (v - iMin) / (iMax - iMin)));
+      const scale = (cache && typeof cache.alphaScale === 'number') ? cache.alphaScale : 1.0;
+      out[di++] = 255;}//Math.round(255 * alphaNorm * scale);}
+      else {  
+        di++;di++;di++;di++;
+      }
+    }
+    this._contourCtx.putImageData(this._contourImageData, 0, 0);
+  };
+
+  // Export globally and close IIFE
   window.CustomBackground = CustomBackground;
 })();

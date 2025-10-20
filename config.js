@@ -8,25 +8,25 @@ const BrushConfig = {
     
     // Brush properties
     brush: {
-        radius: 21,
-        intensity: 0.08,
+        radius: 19,
+        intensity: 1,
         threshold: 0.95
     },
     
-    // Thermal simulation parameters
+    // Thermal simulation parameters (kept minimal)
     thermal: {
-        blurSigma: 2,           // Reduced for phone performance
-        blurRadius: 16,          // Box blur radius for performance
-        blurInterval: 5,        // Apply blur every 5th frame
-        sigmaMultiplier: 2.5,   // Multiplier for calculating gaussian radius
-        maxGaussianRadius: 15,  // Maximum gaussian radius for performance
-        decayRate: 0.9,       // Thermal decay rate per frame
-        centerMultiplier: 1     // Center point intensity multiplier
+        // Controls blur applied to the thermal field (affects smoothness/perf)
+        blurSigma: 10,
+        blurRadius: 9,
+        // How often to apply the blur (frames). 1 = every frame.
+        blurInterval: 1,
+        // Per-frame decay applied to thermal values (0..1). Values <1 slowly fade.
+        decayRate: 0.99
     },
     
     // Performance settings
     performance: {
-        maxPositionsPerFrame: 20,    // Reduced for phones
+        maxPositionsPerFrame: 1,    // Reduced for phones
         contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
         contourInterval: 3,          // Frames between contour overlay updates (increase to lighten CPU)
         debugUpdateInterval: 30,     // Update debug info every N frames
@@ -67,13 +67,12 @@ const BrushConfig = {
             // Rendering mode for persistent mask: 'color' | 'grayscale'
             persistentMode: 'grayscale',
             persistentColor: 'gray',
+            // Controls alpha scaling for contour overlay (0..1). 1.0 = unchanged
+            alphaScale: 0,
             // Grayscale mapping controls for both modes when set to 'grayscale'
-            grayGamma: 1,          // non-linear contrast for grayscale mapping
-            grayMin: 0,              // minimum gray value (0..255)
-            grayMax: 150,            // maximum gray value (0..255)
-            // Optional ceiling for normalization of max temperature values
-            // If > 0, normalization uses min(observedMax, grayMaxCeiling)
-            grayMaxCeiling: 4
+            grayGamma: 3,          // non-linear contrast for grayscale mapping
+            grayMin: 5,              // minimum gray value (0..255)
+            grayMax: 100,            // maximum gray value (0..255)
         },
         
         // Laser position visualization
@@ -93,14 +92,14 @@ const BrushConfig = {
 
         // Particle effects for brush visualization
         particles: {
-            numPerPosition: 0.5,                 // Average number of particles created per brush position (can be fractional)
+            numPerPosition: 0.0001,                 // Average number of particles created per brush position (can be fractional)
             velocity: { min: 1, max: 5 },        // Velocity range (pixels per frame)
             fadeRate: 0.02,                      // Alpha decrease per frame
-            maxParticles: 50,                   // Maximum number of particles
+            maxParticles: 250,                   // Maximum number of particles
             size: 2,                             // Particle radius
             colors: ['234,130,11', '141,76,12', '255,255,255'],  // RGB values for red, orange, white
             startAlpha: 1,                       // Starting alpha value
-            recirculationFlow: -0.8               // Y acceleration (pixels per frame squared)
+            recirculationFlow: -0.3               // Y acceleration (pixels per frame squared)
         }
     },
 

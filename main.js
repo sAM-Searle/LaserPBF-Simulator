@@ -49,14 +49,20 @@ class ThermalBrush {
         // Thermal data - using Float32Array for performance
         this.thermalData = new Float32Array(this.width * this.height);
         this.persistentMask = new Uint8Array(this.width * this.height);
-    // Tracks the maximum intensity a pixel has reached while at/above threshold
-    this.maxThresholded = new Float32Array(this.width * this.height);
-        
+
+        // Tracks whether a pixel is currently at/above threshold (boolean as 0/1)
+        this.aboveThreshold = new Uint8Array(this.width * this.height);
+        // Tracks the maximum intensity a pixel has reached while at/above threshold
+        this.maxThresholded = new Float32Array(this.width * this.height);
+        this.maxMolten = new Float32Array(this.width * this.height);
+        this.isThereMolten = false;
         // Parameters from config
         this.brushRadius = BrushConfig.brush.radius;
         this.blurSigma = BrushConfig.thermal.blurSigma;
         this.threshold = BrushConfig.brush.threshold;
         this.brushIntensity = BrushConfig.brush.intensity;
+        // centerMultiplier may have been removed from config; provide a sensible default
+        this.centerMultiplier = (BrushConfig.thermal && typeof BrushConfig.thermal.centerMultiplier === 'number') ? BrushConfig.thermal.centerMultiplier : 1.0;
         
         // Drawing state
         this.isDrawing = false;
@@ -116,18 +122,6 @@ class ThermalBrush {
             throw new Error('GPU thermal download failed or size mismatch');
         }
         this.thermalData.set(thermal);
-
-        // Download max tracking (optional but used for contours)
-        const maxData = this.gpuCompute.downloadMaxData();
-        if (maxData && maxData.length === this.maxThresholded.length) {
-            this.maxThresholded.set(maxData);
-        }
-
-        // Download persistent mask (optional for contours)
-        const persistent = this.gpuCompute.downloadPersistentData();
-        if (persistent && persistent.length === this.persistentMask.length) {
-            this.persistentMask.set(persistent);
-        }
     }
     
     createFeatheredBrush(radius) {
@@ -155,6 +149,21 @@ class ThermalBrush {
         this.canvas.addEventListener('mousedown', (e) => this.startDrawing(e));
         this.canvas.addEventListener('mousemove', (e) => this.draw(e));
         this.canvas.addEventListener('mouseup', () => this.stopDrawing());
+
+        // // Pointer events (more reliable across devices and when the pointer leaves the element)
+        // this.canvas.addEventListener('pointerdown', (e) => {
+        //     // Try to capture the pointer so we keep receiving events even if the cursor leaves the canvas
+        //     try { this.canvas.setPointerCapture && this.canvas.setPointerCapture(e.pointerId); } catch (err) {}
+        //     this.startDrawing(e);
+        // });
+        // this.canvas.addEventListener('pointermove', (e) => this.draw(e));
+        // this.canvas.addEventListener('pointerup', (e) => {
+        //     try { this.canvas.releasePointerCapture && this.canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+        //     this.stopDrawing();
+        // });
+
+        // Ensure we stop drawing if pointer/mouse is released anywhere in the document
+        document.addEventListener('pointerup', () => this.stopDrawing());
         
         // Touch events for mobile
         this.canvas.addEventListener('touchstart', (e) => {
@@ -351,8 +360,8 @@ class ThermalBrush {
         }
         
         // Center dot
-        const centerIndex = y * this.width + x;
-        this.thermalData[centerIndex] += this.brushIntensity * BrushConfig.thermal.centerMultiplier;
+            const centerIndex = y * this.width + x;
+            this.thermalData[centerIndex] += this.brushIntensity * this.centerMultiplier;
     }
     
     flushBrushBatch() {
@@ -364,7 +373,7 @@ class ThermalBrush {
                 this.gpuCompute.applyBrush(brush.x, brush.y, {
                     brushRadius: this.brushRadius,
                     brushIntensity: this.brushIntensity,
-                    centerMultiplier: BrushConfig.thermal.centerMultiplier
+                        centerMultiplier: this.centerMultiplier
                 });
             }
         } catch (error) {
@@ -445,7 +454,10 @@ class ThermalBrush {
     
     initializeGaussianKernel() {
         const sigma = BrushConfig.thermal.blurSigma;
-        this.gaussianRadius = Math.min(Math.ceil(sigma * BrushConfig.thermal.sigmaMultiplier), BrushConfig.thermal.maxGaussianRadius);
+        // Use configured multipliers when present, otherwise fall back to reasonable defaults
+        const sigmaMultiplier = (BrushConfig.thermal && typeof BrushConfig.thermal.sigmaMultiplier === 'number') ? BrushConfig.thermal.sigmaMultiplier : 2.5;
+        const maxGaussianRadius = (BrushConfig.thermal && typeof BrushConfig.thermal.maxGaussianRadius === 'number') ? BrushConfig.thermal.maxGaussianRadius : 30;
+        this.gaussianRadius = Math.min(Math.ceil(sigma * sigmaMultiplier), maxGaussianRadius);
         const radius = this.gaussianRadius;
         
         this.gaussianKernel = new Float32Array(radius * 2 + 1);
@@ -496,32 +508,33 @@ class ThermalBrush {
     }
     
     updatePersistentMask() {
-        if (this.useGPU && this.gpuCompute && this.gpuCompute.supported) {
-            try {
-                this.gpuCompute.updateMaxTracking();
-                this.gpuCompute.updatePersistentMask(this.threshold);
-            } catch (error) {
-                console.warn('GPU persistent mask failed, falling back to CPU:', error);
-                this.useGPU = false;
-                this.updatePersistentMaskCPU();
-            }
-        } else {
-            this.updatePersistentMaskCPU();
-        }
+        this.updatePersistentMaskCPU();
     }
     
     updatePersistentMaskCPU() {
         // CPU path - persistently track peak temperature per pixel
         const thr = this.threshold;
         const len = this.thermalData.length;
+        this.isThereMolten = false;
         for (let i = 0; i < len; i++) {
             const v = this.thermalData[i];
             if (v > this.maxThresholded[i]) {
                 this.maxThresholded[i] = v;
             }
             if (v >= thr) {
+                this.isThereMolten = true;
                 this.persistentMask[i] = 1;
+
+                if (v > this.maxMolten[i]) {
+                 this.maxMolten[i] = v;
+                }
             }
+            
+            // if (v < thr-0.05) {
+            //     this.maxMolten[i] = 0;
+            // }
+
+
         }
     }
     
@@ -560,12 +573,8 @@ class ThermalBrush {
                         this.thermalData.set(thermal);
                     }
                 }
-                // Max/persistent are used for overlays; pull them less often
+                // Persistent mask is pulled less often; max tracking handled on CPU
                 if ((this.frameCounter % syncMasksEvery) === 0) {
-                    const maxData = this.gpuCompute.downloadMaxData();
-                    if (maxData && maxData.length === this.maxThresholded.length) {
-                        this.maxThresholded.set(maxData);
-                    }
                     const persistent = this.gpuCompute.downloadPersistentData();
                     if (persistent && persistent.length === this.persistentMask.length) {
                         this.persistentMask.set(persistent);
@@ -608,21 +617,12 @@ class ThermalBrush {
         this.ctx.putImageData(imageData, 0, 0);
         
         // Draw contours in background overlay
-        if (window.bg && typeof window.bg.updateContourOverlay === 'function') {
-            const interval = Math.max(1, (BrushConfig.performance && BrushConfig.performance.contourInterval) || 1);
-            if ((this.frameCounter % interval) === 0) {
-                window.bg.updateContourOverlay({
-                    thermalData: this.thermalData,
-                    maxData: this.maxThresholded,
-                    persistentMask: this.persistentMask,
-                    width: this.width,
-                    height: this.height,
-                    threshold: this.threshold,
-                    step: Math.max(1, (BrushConfig.performance.contourSkipPixels | 0)),
-                    thresholdColor: BrushConfig.visual.contour.thresholdColor,
-                    persistentColor: BrushConfig.visual.contour.persistentColor
-                });
-            }
+        if (window.bg && typeof window.bg.updateContourOverlay === 'function'&& this.isThereMolten) {
+            window.bg.updateContourOverlay({
+                width: this.width,
+                height: this.height,
+                molten_pixels: this.maxMolten,
+         });
         }
         
         // Draw laser positions
@@ -887,6 +887,7 @@ ThermalBrush.prototype.freezeFrameAndWipe = function() {
     if (this.thermalData) this.thermalData.fill(0);
     if (this.persistentMask) this.persistentMask.fill(0);
     if (this.maxThresholded) this.maxThresholded.fill(0);
+    if (this.aboveThreshold) this.aboveThreshold.fill(0);
     this.positionQueue.length = 0;
     this.lastPos = null;
     this.prevSmooth = null;

@@ -27,28 +27,17 @@
         const bgCanvas = document.getElementById('bgCanvas');
         const canvas = document.getElementById('canvas');
         const stage = document.getElementById('stage');
-        // Set fixed canvas sizes from config
-        bgCanvas.width = canvas.width = BrushConfig.canvas.width;
-        bgCanvas.height = canvas.height = BrushConfig.canvas.height;
+    // Set fixed canvas sizes from config (both drawing buffer and CSS display size)
+    bgCanvas.width = canvas.width = BrushConfig.canvas.width;
+    bgCanvas.height = canvas.height = BrushConfig.canvas.height;
+    bgCanvas.style.width = canvas.style.width = BrushConfig.canvas.width + 'px';
+    bgCanvas.style.height = canvas.style.height = BrushConfig.canvas.height + 'px';
         stage.style.width = BrushConfig.canvas.width + 'px';
         stage.style.height = BrushConfig.canvas.height + 'px';
         
-        function scaleStageToFit() {
-            const w = BrushConfig.canvas.width;
-            const h = BrushConfig.canvas.height;
-            const aspect = w / h;
-            let vw = window.innerWidth;
-            let vh = window.innerHeight;
-            let scale = 1;
-            if (vw < w || vh < h) {
-                const scaleX = vw / w;
-                const scaleY = vh / h;
-                scale = Math.min(scaleX, scaleY);
-            }
-            stage.style.transform = `scale(${scale})`;
-        }
-        scaleStageToFit();
-        window.addEventListener('resize', scaleStageToFit);
+        // Adaptive scaling removed: keep stage at fixed 1:1 pixel size
+        // Stage width/height are already set above to match canvas pixel dimensions
+        stage.style.transform = 'none';
     </script>
     <script src="background.js"></script>
     <script>
