@@ -27,6 +27,7 @@ const BrushConfig = {
     // Performance settings
     performance: {
         maxPositionsPerFrame: 20,    // Reduced for phones
+        maxDelayFrames: 60,          // Cap on how long a brush position can stay queued
         contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
         contourInterval: 0,          // Frames between contour overlay updates (increase to lighten CPU)
         debugUpdateInterval: 30,     // Update debug info every N frames
