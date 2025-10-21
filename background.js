@@ -624,6 +624,13 @@ CustomBackground.prototype._prepareContourConfig = function(params) {
     const width = params.width || this.width;
     const height = params.height || this.height;
     const molten = params.molten_pixels || params.maxData || null;
+    // New: configurable minimumChangeValue (default 0, from config if available)
+    let minimumChangeValue = 0;
+    if (typeof params.minimumChangeValue === 'number') {
+      minimumChangeValue = params.minimumChangeValue;
+    } else if (typeof BrushConfig !== 'undefined' && BrushConfig.visual && BrushConfig.visual.contour && typeof BrushConfig.visual.contour.minimumChangeValue === 'number') {
+      minimumChangeValue = BrushConfig.visual.contour.minimumChangeValue;
+    }
     // Ensure contour cache is up-to-date (allow maxData to inform normalization)
     this._prepareContourConfig({ width, height, step: params.step, maxData: molten });
 
@@ -634,21 +641,21 @@ CustomBackground.prototype._prepareContourConfig = function(params) {
 
     for (let i = 0; i < n; i++) {
       const v = molten[i];
-      if (v>0){
-      const gray = this.convertIntensityToGray(v);
-      out[di++] = gray;
-      out[di++] = gray;
-      out[di++] = gray;
-      // Set alpha proportional to normalized intensity (avoid fully opaque black areas)
-      const cache = this._contourCache || {};
-      const iMin = Number.isFinite(cache.intensityMin) ? cache.intensityMin : 0;
-      const iMax = Number.isFinite(cache.intensityMax) ? cache.intensityMax : 1;
-      let alphaNorm = 0;
-      if (iMax > iMin) alphaNorm = Math.max(0, Math.min(1, (v - iMin) / (iMax - iMin)));
-      const scale = (cache && typeof cache.alphaScale === 'number') ? cache.alphaScale : 1.0;
-      out[di++] = 255;}//Math.round(255 * alphaNorm * scale);}
-      else {  
-        di++;di++;di++;di++;
+      const prevAlpha = out[di+3]; // Use alpha channel, not green
+      const gray = this.convertIntensityToGray(v-1);
+      let shouldUpdate = false;
+      if (prevAlpha == 0) {
+        shouldUpdate = (v > 0.95);
+      } else {
+        shouldUpdate = (gray > minimumChangeValue);
+      }
+      if (shouldUpdate) {
+        out[di++] = gray;
+        out[di++] = gray;
+        out[di++] = gray;
+        out[di++] = 255;
+      } else {
+        di++; di++; di++; di++;
       }
     }
     this._contourCtx.putImageData(this._contourImageData, 0, 0);

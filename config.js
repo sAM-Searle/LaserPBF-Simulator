@@ -8,26 +8,25 @@ const BrushConfig = {
     
     // Brush properties
     brush: {
-        radius: 19,
-        intensity: 0.08,
+        radius: 20,
+        intensity: 0.1,
         threshold: 0.95
     },
     
     // Thermal simulation parameters (kept minimal)
     thermal: {
         // Controls blur applied to the thermal field (affects smoothness/perf)
-        blurSigma: 10,
-        blurRadius: 19,
+        blurSigma: 3,
+        blurRadius: 9,
         // How often to apply the blur (frames). 1 = every frame.
         blurInterval: 1,
         // Per-frame decay applied to thermal values (0..1). Values <1 slowly fade.
-        decayRate: 0.95
+        decayRate: 0.99
     },
     
     // Performance settings
     performance: {
-        maxPositionsPerFrame: 20,    // Reduced for phones
-        maxDelayFrames: 60,          // Cap on how long a brush position can stay queued
+        maxPositionsPerFrame: 6,    // Reduced for phones
         contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
         contourInterval: 0,          // Frames between contour overlay updates (increase to lighten CPU)
         debugUpdateInterval: 30,     // Update debug info every N frames
@@ -35,7 +34,7 @@ const BrushConfig = {
         
         // GPU acceleration settings
         useGPU: true,               // Enable GPU acceleration if available
-        gpuBatchSize: 20,         // Number of brush applications to batch for GPU
+        gpuBatchSize: 6,         // Number of brush applications to batch for GPU
         gpuFallback: true,          // Automatically fallback to CPU if GPU fails
         gpuSyncInterval: 1,     // Frames between GPU->CPU thermal sync (higher = less CPU but more latency)
         gpuMaskSyncInterval: 1,     // Frames between GPU->CPU max/persistent syncs
@@ -45,7 +44,7 @@ const BrushConfig = {
     
     // Smoothing settings
     smoothing: {
-        alpha: 0.8,  // 0..1, higher = smoother but laggier
+        alpha: 0.9,  // 0..1, higher = smoother but laggier
         useBresenham: true  // Use Bresenham's line algorithm for precise line drawing
     },
     
@@ -71,9 +70,11 @@ const BrushConfig = {
             // Controls alpha scaling for contour overlay (0..1). 1.0 = unchanged
             alphaScale: 0,
             // Grayscale mapping controls for both modes when set to 'grayscale'
-            grayGamma: 3,          // non-linear contrast for grayscale mapping
-            grayMin: 5,              // minimum gray value (0..255)
-            grayMax: 100,            // maximum gray value (0..255)
+            grayGamma: 1.3,          // non-linear contrast for grayscale mapping
+            grayMin: 70,              // minimum gray value (0..255)
+            grayMax: 180,            // maximum gray value (0..255)
+            // Minimum value for a change to be visualized in the contour overlay
+            minimumChangeValue: 75,   // Set to your desired threshold (e.g., 0.01)
         },
         
         // Laser position visualization
@@ -180,7 +181,9 @@ const BrushConfig = {
     
     // Debug settings
     debug: {
-        enabled: true
+        enabled: true,
+        logInputPositions: true
+
     }
 };
 

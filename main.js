@@ -1,4 +1,89 @@
 class ThermalBrush {
+    // Debug: save all brush variants as CSV files for inspection
+    debugSaveBrushVariantsCSV(prefix = 'brush_variant') {
+        if (!this.brushVariants || !this.brushVariants.length) {
+            console.warn('[Debug] No brush variants to save.');
+            return;
+        }
+        this.brushVariants.forEach((variant, idx) => {
+            const size = variant.size;
+            const data = variant.data;
+            let csv = '';
+            for (let y = 0; y < size; y++) {
+                let row = [];
+                for (let x = 0; x < size; x++) {
+                    row.push(data[y * size + x]);
+                }
+                csv += row.join(',') + '\n';
+            }
+            const filename = `${prefix}_${idx}.csv`;
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(link.href);
+            console.log(`[Debug] Saved brush variant ${idx} as ${filename}`);
+        });
+    }
+    // Debug: save the current canvas as an image file (PNG)
+    debugSaveCanvasImage(filename = 'thermal_brush_snapshot.png') {
+        if (!this.canvas) return;
+        const link = document.createElement('a');
+        link.href = this.canvas.toDataURL('image/png');
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        console.log(`[Debug] Saved canvas image as ${filename}`);
+    }
+    // Debug: enqueue a straight line of positions for the brush to process
+    debugEnqueueLine(start, end, step = 1) {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const dist = Math.max(1, Math.ceil(Math.hypot(dx, dy)));
+        for (let i = 0; i <= dist; i += step) {
+            const t = i / dist;
+            const x = Math.round(start.x + dx * t);
+            const y = Math.round(start.y + dy * t);
+            this.enqueuePosition({ x, y });
+        }
+        if (BrushConfig.debug?.logInputPositions) {
+            console.log(`[Debug] Enqueued line from`, start, 'to', end, `(${dist+1} positions)`);
+        }
+        // Diagnose the uniformity of the thermal field along the line after enqueuing
+        // Wait until the positionQueue is empty (line processed), then call diagnoseLineUniformity
+        let attempts = 0;
+        const maxAttempts = 20;
+        const checkProcessed = () => {
+            if (this.positionQueue.length === 0) {
+                const stats = this.diagnoseLineUniformity(start, end, step);
+                if (stats) {
+                    console.log('[Debug] diagnoseLineUniformity after debugEnqueueLine:', stats);
+                }
+            } else if (attempts < maxAttempts) {
+                attempts++;
+                setTimeout(checkProcessed, 50);
+            } else {
+                console.warn('[Debug] diagnoseLineUniformity: positionQueue not empty after waiting.');
+            }
+        };
+        setTimeout(checkProcessed, 150);
+    }
+    // Debug: draw a straight line between two points on the main canvas
+    debugDrawLine(start, end, color = 'cyan', width = 2) {
+        if (!this.ctx) return;
+        this.ctx.save();
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = width;
+        this.ctx.beginPath();
+        this.ctx.moveTo(start.x, start.y);
+        this.ctx.lineTo(end.x, end.y);
+        this.ctx.stroke();
+        this.ctx.restore();
+    }
     constructor() {
         this.canvas = document.getElementById('canvas');
         this.ctx = this.canvas.getContext('2d');
@@ -71,14 +156,10 @@ class ThermalBrush {
         this.brushPositions = [];
         this.particles = [];
         this.particleSprites = new Map();
-
-        const perfConfig = BrushConfig.performance || {};
-        this.maxPositionsPerFrame = Math.max(1, perfConfig.maxPositionsPerFrame || 1);
-        this._maxDelayFrames = Math.max(0, perfConfig.maxDelayFrames ?? 60);
-
+        this.maxPositionsPerFrame = BrushConfig.performance.maxPositionsPerFrame;
+        
         // Frame counter for timing
         this.frameCounter = 0;
-        this._currentFrameStamp = 0;
         
         // Smoothing properties
         this.smoothAlpha = BrushConfig.smoothing.alpha;
@@ -88,6 +169,7 @@ class ThermalBrush {
         this.brush = this.createFeatheredBrush(this.brushRadius);
         this.initializeGaussianKernel();
     // Precompute diffused brush variants (Gaussian-blur of base kernel)
+    this.maxPositionsPerFrame = Math.max(1, BrushConfig.performance?.maxPositionsPerFrame || 1);
     this.brushVariants = [];
     this.brushVariantRadii = [];
 
@@ -123,12 +205,22 @@ class ThermalBrush {
                     data[k] = basePadded[k] * (1 - t) + blurredMax.data[k] * t;
                 }
 
-                this.brushVariants.push({ data, size: outSize });
+                // Bake step-decay scaling into the precomputed variant so we don't need to
+                // multiply the entire thermal field per-position in the animate loop.
+                // Use exponent (n / N) with n = 1..N so variants receive configuredDecay^(n/N).
+                // For zero-based index i, n = i+1.
+                const variantDecayScale = Math.pow(this._configuredDecay, (i + 1) / this.maxPositionsPerFrame);
+                if (variantDecayScale !== 1.0) {
+                    for (let k = 0; k < data.length; k++) data[k] *= variantDecayScale;
+                }
+
+                this.brushVariants.push({ data, size: outSize, decayScale: variantDecayScale });
                 this.brushVariantRadii.push(Math.floor((outSize - 1) / 2));
             }
         } catch (e) {
             // fallback: single variant equals base
-            this.brushVariants = [ this.brush ];
+            // ensure fallback variant includes decayScale
+            this.brushVariants = [ Object.assign({ decayScale: 1.0 }, this.brush) ];
             this.brushVariantRadii = [ this.brushRadius ];
         }
 
@@ -158,6 +250,29 @@ class ThermalBrush {
         this._slowFrameCount = 0;
         this._fastFrameCount = 0;
         this._bgPausedByAdaptive = false;
+    }
+
+    // Diagnostic helper: sample thermalData along an integer line and report stats
+    diagnoseLineUniformity(start, end, sampleStep = 1) {
+        const samples = [];
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const dist = Math.max(1, Math.ceil(Math.hypot(dx, dy)));
+        for (let i = 0; i <= dist; i += sampleStep) {
+            const t = i / dist;
+            const x = Math.max(0, Math.min(this.width - 1, Math.floor(start.x + dx * t)));
+            const y = Math.max(0, Math.min(this.height - 1, Math.floor(start.y + dy * t)));
+            samples.push(this.thermalData[y * this.width + x]);
+        }
+        if (samples.length === 0) return null;
+        let sum = 0, min = Infinity, max = -Infinity;
+        for (const v of samples) { sum += v; min = Math.min(min, v); max = Math.max(max, v); }
+        const mean = sum / samples.length;
+        let sd = 0;
+        for (const v of samples) sd += (v - mean) * (v - mean);
+        sd = Math.sqrt(sd / samples.length);
+        console.log('diagnoseLineUniformity', { start, end, samples: samples.length, mean, min, max, sd, raw: samples });
+        return { mean, min, max, sd, samples };
     }
 
     // Synchronize GPU buffers back into CPU arrays for rendering/metrics
@@ -307,14 +422,19 @@ class ThermalBrush {
         this.isDrawing = true;
         const pos = this.getEventPos(e);
         this.lastPos = pos;
-        this.positionQueue.push({ ...pos, enqueueFrame: this._currentFrameStamp });
+        this.positionQueue.push(pos);
+        if (BrushConfig.debug?.logInputPositions) {
+            console.log('[Input] startDrawing: added', pos);
+        }
     }
     
     draw(e) {
         if (!this.isDrawing) return;
-        
         const pos = this.getEventPos(e);
         this.addLinePositions(this.lastPos, pos);
+        if (BrushConfig.debug?.logInputPositions) {
+            console.log('[Input] draw: from', this.lastPos, 'to', pos);
+        }
         this.lastPos = pos;
     }
     
@@ -329,7 +449,10 @@ class ThermalBrush {
         const y = Math.max(0, Math.min(this.height - 1, Math.floor(pos.y)));
         const last = this.positionQueue[this.positionQueue.length - 1];
         if (!last || last.x !== x || last.y !== y) {
-            this.positionQueue.push({ x, y, enqueueFrame: this._currentFrameStamp });
+            this.positionQueue.push({ x, y });
+            if (BrushConfig.debug?.logInputPositions) {
+                console.log('[Input] enqueuePosition: added', { x, y });
+            }
         }
     }
     
@@ -367,16 +490,16 @@ class ThermalBrush {
                 };
                 this.prevSmooth = smoothedPos;
             }
-            
             // Only add if position is different from the last one in queue
             const lastPos = this.positionQueue[this.positionQueue.length - 1];
             if (!lastPos || lastPos.x !== smoothedPos.x || lastPos.y !== smoothedPos.y) {
-                this.positionQueue.push({ x: smoothedPos.x, y: smoothedPos.y, enqueueFrame: this._currentFrameStamp });
+                this.positionQueue.push({ x: smoothedPos.x, y: smoothedPos.y });
+                if (BrushConfig.debug?.logInputPositions) {
+                    console.log('[Input] addLinePositionsBresenham: added', { x: smoothedPos.x, y: smoothedPos.y });
+                }
             }
-            
             // Check if we've reached the end point
             if (x0 === x1 && y0 === y1) break;
-            
             const e2 = 2 * err;
             if (e2 > -dy) {
                 err -= dy;
@@ -400,7 +523,6 @@ class ThermalBrush {
             const t = i / steps;
             const x = Math.floor(start.x + dx * t);
             const y = Math.floor(start.y + dy * t);
-
             // EMA smoothing
             if (!this.prevSmooth) {
                 this.prevSmooth = { x, y };
@@ -411,11 +533,13 @@ class ThermalBrush {
                     y: Math.round(a * y + (1 - a) * this.prevSmooth.y),
                 };
             }
-
             // Only add if position is different from the last one in queue
             const lastPos = this.positionQueue[this.positionQueue.length - 1];
             if (!lastPos || lastPos.x !== this.prevSmooth.x || lastPos.y !== this.prevSmooth.y) {
-                this.positionQueue.push({ x: this.prevSmooth.x, y: this.prevSmooth.y, enqueueFrame: this._currentFrameStamp });
+                this.positionQueue.push({ x: this.prevSmooth.x, y: this.prevSmooth.y });
+                if (BrushConfig.debug?.logInputPositions) {
+                    console.log('[Input] addLinePositionsLinear: added', { x: this.prevSmooth.x, y: this.prevSmooth.y });
+                }
             }
         }
     }
@@ -426,29 +550,28 @@ class ThermalBrush {
         if (this.useGPU && this.gpuCompute && this.gpuCompute.supported) {
             try {
                 // Batch brush applications for GPU
-                this.brushBatch.push({ x, y, intensityScale: 1, variant: 0 });
+                this.brushBatch.push({ x, y });
                 if (this.brushBatch.length >= this.maxBatchSize) {
                     this.flushBrushBatch();
                 }
             } catch (error) {
                 console.warn('GPU brush failed, falling back to CPU:', error);
                 this.useGPU = false;
-                this.applyBrushCPU(x, y, this.brush, 1);
+                this.applyBrushCPU(x, y);
             }
         } else {
             // CPU path: pick a precomputed variant based on current queue length or a round-robin index
             // Caller (animate) will pass variant -> fallback here to base
-            this.applyBrushCPU(x, y, this.brush, 1);
+            this.applyBrushCPU(x, y, this.brush);
         }
     }
-
-    applyBrushCPU(x, y, brushObj, intensityScale = 1) {
+    
+    applyBrushCPU(x, y, brushObj) {
         // brushObj is expected to be { data: Float32Array, size: number }
         const brush = brushObj || this.brush;
         const brushSizeLocal = brush.size;
         // Derive local radius from the brush size
         const localRadius = Math.floor((brushSizeLocal - 1) / 2);
-        const baseIntensity = this.brushIntensity * intensityScale;
 
         // Compute bounds using localRadius so larger/smaller variants are applied correctly
         const startX = Math.max(0, x - localRadius);
@@ -465,7 +588,7 @@ class ThermalBrush {
                     const brushIndex = by * brushSizeLocal + bx;
                     const canvasIndex = cy * this.width + cx;
                     // Apply brush influence scaled by configured intensity
-                    this.thermalData[canvasIndex] += brush.data[brushIndex] * baseIntensity;
+                    this.thermalData[canvasIndex] += brush.data[brushIndex] * this.brushIntensity;
                 }
             }
         }
@@ -473,7 +596,8 @@ class ThermalBrush {
         // Center dot: ensure we still use the exact x,y canvas index
         if (x >= 0 && x < this.width && y >= 0 && y < this.height) {
             const centerIndex = y * this.width + x;
-            this.thermalData[centerIndex] += baseIntensity * this.centerMultiplier;
+            const centerScale = (brush.decayScale !== undefined) ? brush.decayScale : 1.0;
+            this.thermalData[centerIndex] += this.brushIntensity * this.centerMultiplier * centerScale;
         }
     }
     
@@ -486,10 +610,9 @@ class ThermalBrush {
                 // Determine radius from variant if present
                 const variantIdx = (typeof brush.variant === 'number') ? Math.max(0, Math.min(this.brushVariants.length - 1, brush.variant)) : 0;
                 const variantRadius = this.brushVariantRadii[variantIdx] || this.brushRadius;
-                const intensity = this.brushIntensity * (brush.intensityScale ?? 1);
                 this.gpuCompute.applyBrush(brush.x, brush.y, {
                     brushRadius: variantRadius,
-                    brushIntensity: intensity,
+                    brushIntensity: this.brushIntensity,
                     centerMultiplier: this.centerMultiplier,
                     variantIndex: variantIdx
                 });
@@ -501,7 +624,7 @@ class ThermalBrush {
             for (const b of this.brushBatch) {
                 const vi = (typeof b.variant === 'number') ? Math.max(0, Math.min(this.brushVariants.length - 1, b.variant)) : 0;
                 const vb = this.brushVariants[vi] || this.brush;
-                this.applyBrushCPU(b.x, b.y, vb, b.intensityScale ?? 1);
+                this.applyBrushCPU(b.x, b.y, vb);
             }
         }
         
@@ -641,7 +764,7 @@ class ThermalBrush {
             if (v > this.maxThresholded[i]) {
                 this.maxThresholded[i] = v;
             }
-            if (v >= thr) {
+            if (v > thr) {
                 this.isThereMolten = true;
                 this.persistentMask[i] = 1;
 
@@ -650,7 +773,7 @@ class ThermalBrush {
                 }
             }
             
-            if (v < thr) {
+            if (v <= thr) {
                 this.maxMolten[i] = 0;
             }
 
@@ -890,40 +1013,33 @@ class ThermalBrush {
             return;
         }
 
-        const frameStamp = this.frameCounter;
-        this._currentFrameStamp = frameStamp;
         this.frameCounter++;
         
         // Process queue
         let processed = 0;
         while (this.positionQueue.length > 0 && processed < this.maxPositionsPerFrame) {
             const pos = this.positionQueue.shift();
-            const enqueuedFrame = (pos && typeof pos.enqueueFrame === 'number') ? pos.enqueueFrame : frameStamp;
-            const delayFrames = Math.max(0, Math.min(frameStamp - enqueuedFrame, this._maxDelayFrames));
-
             // Select variant based on processed index (clamped)
-            const baseVariantIndex = Math.min(processed, this.brushVariants.length - 1);
-            const variantIndex = Math.min(baseVariantIndex + delayFrames, this.brushVariants.length - 1);
+            const variantIndex = Math.min(processed, this.brushVariants.length - 1);
             const variantBrush = this.brushVariants[variantIndex] || this.brush;
 
-            const stepScale = Math.pow(this._stepDecay, baseVariantIndex);
-            const delayScale = Math.pow(this._configuredDecay, delayFrames);
-            const intensityScale = stepScale * delayScale;
+            if (BrushConfig.debug?.logInputPositions) {
+                console.log('[Process] animate: processing', pos, 'with variant', variantIndex);
+            }
 
             if (this.useGPU && this.gpuCompute && this.gpuCompute.supported) {
                 // Include variant index so GPU flush can decide behavior if desired
-                this.brushBatch.push({ x: pos.x, y: pos.y, variant: variantIndex, intensityScale });
+                this.brushBatch.push({ x: pos.x, y: pos.y, variant: variantIndex });
                 if (this.brushBatch.length >= this.maxBatchSize) this.flushBrushBatch();
             } else {
                 // CPU path: apply using the precomputed variant
-                this.applyBrushCPU(pos.x, pos.y, variantBrush, intensityScale);
+                this.applyBrushCPU(pos.x, pos.y, variantBrush);
             }
 
-            const drawPos = { x: pos.x, y: pos.y };
-            this.brushPositions.push(drawPos);
+            this.brushPositions.push(pos);
 
             if (window.bg && typeof window.bg.onBrushPosition === 'function') {
-                window.bg.onBrushPosition(drawPos);
+                window.bg.onBrushPosition(pos);
             }
 
             processed++;
