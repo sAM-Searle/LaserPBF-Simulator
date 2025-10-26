@@ -78,7 +78,7 @@ class GPUCompute {
         const gl = this.gl;
         const tex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, tex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, w, h, 0, gl.RED, gl.FLOAT, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -123,7 +123,7 @@ class GPUCompute {
         
         // Brush application shader
         const brushFragShader = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
-            precision highp float;
+            precision mediump float;
             uniform sampler2D u_thermalData;
             uniform vec2 u_brushPos;
             uniform float u_brushRadius;
@@ -131,7 +131,7 @@ class GPUCompute {
             uniform float u_centerMultiplier;
             uniform vec2 u_resolution;
             in vec2 v_texCoord;
-            out float outColor;
+            out vec4 outColor;
             
             void main() {
                 vec2 pixelPos = v_texCoord * u_resolution;
@@ -150,7 +150,7 @@ class GPUCompute {
                     }
                 }
                 
-                outColor = currentValue + brushValue;
+                outColor = vec4(currentValue + brushValue, 0.0, 0.0, 1.0);
             }
         `);
         
@@ -162,7 +162,7 @@ class GPUCompute {
             uniform float u_sigma;
             uniform vec2 u_resolution;
             in vec2 v_texCoord;
-            out float outColor;
+            out vec4 outColor;
             
             void main() {
                 vec2 texelSize = 1.0 / u_resolution;
@@ -178,7 +178,7 @@ class GPUCompute {
                     weightSum += weight;
                 }
                 
-                outColor = sum / weightSum;
+                outColor = vec4(sum / weightSum, 0.0, 0.0, 1.0);
             }
         `);
         
@@ -188,10 +188,10 @@ class GPUCompute {
             uniform sampler2D u_thermalData;
             uniform float u_decayRate;
             in vec2 v_texCoord;
-            out float outColor;
+            out vec4 outColor;
             
             void main() {
-                outColor = texture(u_thermalData, v_texCoord).r * u_decayRate;
+                outColor = vec4(texture(u_thermalData, v_texCoord).r * u_decayRate, 0.0, 0.0, 1.0);
             }
         `);
         
@@ -204,12 +204,12 @@ class GPUCompute {
             uniform sampler2D u_persistentMask;
             uniform float u_threshold;
             in vec2 v_texCoord;
-            out float outColor;
+            out vec4 outColor;
             
             void main() {
                 float thermal = texture(u_thermalData, v_texCoord).r;
                 float persistent = texture(u_persistentMask, v_texCoord).r;
-                outColor = (thermal >= u_threshold) ? 1.0 : persistent;
+                outColor = vec4((thermal >= u_threshold) ? 1.0 : persistent, 0.0, 0.0, 1.0);
             }
         `);
         
@@ -240,7 +240,7 @@ class GPUCompute {
             uniform vec2 u_regionHalfWH;
             uniform float u_time; // seconds
             in vec2 v_texCoord;
-            out float outColor;
+            out vec4 outColor;
 
             float rand(vec2 co) {
                 return fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453);
@@ -290,7 +290,7 @@ class GPUCompute {
                     pos.y = clamp(pos.y, c.y - h.y, c.y + h.y);
                 }
 
-                outColor = pos.x; // X component
+                outColor = vec4(pos.x, 0.0, 0.0, 1.0); // X component
             }
         `);
 
@@ -313,7 +313,7 @@ class GPUCompute {
             uniform vec2 u_regionHalfWH;
             uniform float u_time; // seconds
             in vec2 v_texCoord;
-            out float outColor;
+            out vec4 outColor;
 
             float rand(vec2 co) {
                 return fract(sin(dot(co, vec2(12.9898,78.233))) * 43758.5453);
@@ -363,7 +363,7 @@ class GPUCompute {
                     pos.y = clamp(pos.y, c.y - h.y, c.y + h.y);
                 }
 
-                outColor = pos.y; // Y component
+                outColor = vec4(pos.y, 0.0, 0.0, 1.0); // Y component
             }
         `);
 
@@ -704,8 +704,17 @@ class GPUCompute {
         
         try {
             const gl = this.gl;
+            // Convert to RGBA format
+            const rgbaData = new Float32Array(this.width * this.height * 4);
+            for (let i = 0; i < data.length; i++) {
+                rgbaData[i * 4] = data[i]; // R
+                rgbaData[i * 4 + 1] = 0.0; // G
+                rgbaData[i * 4 + 2] = 0.0; // B
+                rgbaData[i * 4 + 3] = 1.0; // A
+            }
+            
             gl.bindTexture(gl.TEXTURE_2D, this.thermalTexA);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.width, this.height, gl.RED, gl.FLOAT, data);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, rgbaData);
         } catch (error) {
             console.warn('GPU thermal data upload failed:', error);
         }
@@ -716,12 +725,18 @@ class GPUCompute {
         
         try {
             const gl = this.gl;
-            const data = new Float32Array(this.width * this.height);
+            const data = new Float32Array(this.width * this.height * 4);
             
             gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbA);
-            gl.readPixels(0, 0, this.width, this.height, gl.RED, gl.FLOAT, data);
+            gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, data);
             
-            return data;
+            // Extract R channel
+            const result = new Float32Array(this.width * this.height);
+            for (let i = 0; i < result.length; i++) {
+                result[i] = data[i * 4];
+            }
+            
+            return result;
         } catch (error) {
             console.warn('GPU thermal data download failed:', error);
             return null;
@@ -737,12 +752,18 @@ class GPUCompute {
         if (!this.supported) return null;
         
         const gl = this.gl;
-        const data = new Uint8Array(this.width * this.height);
+        const data = new Uint8Array(this.width * this.height * 4);
         
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.persistentFbA);
-        gl.readPixels(0, 0, this.width, this.height, gl.RED, gl.UNSIGNED_BYTE, data);
+        gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
         
-        return data;
+        // Extract R channel
+        const result = new Uint8Array(this.width * this.height);
+        for (let i = 0; i < result.length; i++) {
+            result[i] = data[i * 4];
+        }
+        
+        return result;
     }
     
     clear() {
@@ -779,24 +800,24 @@ class GPUCompute {
         // Initialize with provided positions or zeros
         const initPos = opts.positions instanceof Float32Array ? opts.positions : null;
         if (initPos && initPos.length >= this.particleCount * 2) {
-            // Pack X and Y separately
-            const xs = new Float32Array(this.particleTexWidth * this.particleTexHeight);
-            const ys = new Float32Array(this.particleTexWidth * this.particleTexHeight);
+            // Pack X and Y separately as RGBA
+            const xsRGBA = new Float32Array(this.particleTexWidth * this.particleTexHeight * 4);
+            const ysRGBA = new Float32Array(this.particleTexWidth * this.particleTexHeight * 4);
             for (let i = 0; i < this.particleCount; i++) {
-                xs[i] = initPos[i * 2];
-                ys[i] = initPos[i * 2 + 1];
+                xsRGBA[i * 4] = initPos[i * 2];
+                ysRGBA[i * 4] = initPos[i * 2 + 1];
             }
             gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, xs);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RGBA, gl.FLOAT, xsRGBA);
             gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, ys);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RGBA, gl.FLOAT, ysRGBA);
         } else {
             // Clear to zeros
-            const zero = new Float32Array(this.particleTexWidth * this.particleTexHeight);
+            const zeroRGBA = new Float32Array(this.particleTexWidth * this.particleTexHeight * 4);
             gl.bindTexture(gl.TEXTURE_2D, this.pPosX_A);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, zero);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RGBA, gl.FLOAT, zeroRGBA);
             gl.bindTexture(gl.TEXTURE_2D, this.pPosY_A);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RED, gl.FLOAT, zero);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, this.particleTexHeight, gl.RGBA, gl.FLOAT, zeroRGBA);
         }
 
         // Attributes (radius, gray) - static textures
@@ -806,20 +827,34 @@ class GPUCompute {
         this.pRadiusTex = this.createFloatTexture(this.particleTexWidth, 1);
         this.pGrayTex = this.createFloatTexture(this.particleTexWidth, 1);
         if (radii && radii.length >= this.particleCount) {
+            const radiiRGBA = new Float32Array(this.particleTexWidth * 4);
+            for (let i = 0; i < this.particleCount; i++) {
+                radiiRGBA[i * 4] = radii[i];
+            }
             gl.bindTexture(gl.TEXTURE_2D, this.pRadiusTex);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, radii);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RGBA, gl.FLOAT, radiiRGBA);
         } else {
-            const ones = new Float32Array(this.particleTexWidth); ones.fill(3);
+            const onesRGBA = new Float32Array(this.particleTexWidth * 4);
+            for (let i = 0; i < this.particleCount; i++) {
+                onesRGBA[i * 4] = 3.0;
+            }
             gl.bindTexture(gl.TEXTURE_2D, this.pRadiusTex);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, ones);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RGBA, gl.FLOAT, onesRGBA);
         }
         if (grays && grays.length >= this.particleCount) {
+            const graysRGBA = new Float32Array(this.particleTexWidth * 4);
+            for (let i = 0; i < this.particleCount; i++) {
+                graysRGBA[i * 4] = grays[i];
+            }
             gl.bindTexture(gl.TEXTURE_2D, this.pGrayTex);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, grays);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RGBA, gl.FLOAT, graysRGBA);
         } else {
-            const gdef = new Float32Array(this.particleTexWidth); gdef.fill(200);
+            const gdefRGBA = new Float32Array(this.particleTexWidth * 4);
+            for (let i = 0; i < this.particleCount; i++) {
+                gdefRGBA[i * 4] = 200.0;
+            }
             gl.bindTexture(gl.TEXTURE_2D, this.pGrayTex);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RED, gl.FLOAT, gdef);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.particleTexWidth, 1, gl.RGBA, gl.FLOAT, gdefRGBA);
         }
 
         // Region
@@ -903,16 +938,16 @@ class GPUCompute {
         const gl = this.gl;
         const W = this.particleTexWidth;
         const H = this.particleTexHeight;
-        const xs = new Float32Array(W * H);
-        const ys = new Float32Array(W * H);
+        const xsRGBA = new Float32Array(W * H * 4);
+        const ysRGBA = new Float32Array(W * H * 4);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.pPosX_FbA);
-        gl.readPixels(0, 0, W, H, gl.RED, gl.FLOAT, xs);
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, xsRGBA);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.pPosY_FbA);
-        gl.readPixels(0, 0, W, H, gl.RED, gl.FLOAT, ys);
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.FLOAT, ysRGBA);
         const out = new Float32Array(this.particleCount * 2);
         for (let i = 0; i < this.particleCount; i++) {
-            out[i * 2] = xs[i];
-            out[i * 2 + 1] = ys[i];
+            out[i * 2] = xsRGBA[i * 4];
+            out[i * 2 + 1] = ysRGBA[i * 4];
         }
         return out;
     }

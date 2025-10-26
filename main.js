@@ -722,7 +722,7 @@ class ThermalBrush {
     
     thermalColormap(value) {
         // Clamp to 0-1
-        value = Math.max(0, Math.min(1, value));
+        //value = Math.max(0, Math.min(1, value));
         
         // Thermal colormap: gray -> red -> orange -> white
         if (value < BrushConfig.visual.colormap.firstTransition) {
@@ -813,7 +813,23 @@ class ThermalBrush {
                 if ((this.frameCounter % syncEvery) === 0) {
                     const thermal = this.gpuCompute.downloadThermalData();
                     if (thermal && thermal.length === this.thermalData.length) {
-                        this.thermalData.set(thermal);
+                        // Check if data is valid (not NaN or infinite)
+                        let valid = true;
+                        for (let i = 0; i < thermal.length; i += 100) { // Sample check
+                            if (!Number.isFinite(thermal[i])) {
+                                valid = false;
+                                break;
+                            }
+                        }
+                        if (valid) {
+                            this.thermalData.set(thermal);
+                        } else {
+                            console.warn('GPU thermal data contains invalid values, falling back to CPU');
+                            this.useGPU = false;
+                        }
+                    } else {
+                        console.warn('GPU thermal download failed or size mismatch, falling back to CPU');
+                        this.useGPU = false;
                     }
                 }
                 // Persistent mask is pulled less often; max tracking handled on CPU

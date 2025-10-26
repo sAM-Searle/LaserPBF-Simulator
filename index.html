@@ -53,6 +53,10 @@
                 baseColor: BrushConfig.background.baseColor,
                 interactionMode: BrushConfig.background.interactionMode
             });
+            // Start animation if enabled
+            if (BrushConfig.background.animate) {
+                window.bg.start();
+            }
         }
     </script>
     <script src="gpu-compute.js"></script>

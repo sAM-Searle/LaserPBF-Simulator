@@ -26,7 +26,7 @@ const BrushConfig = {
     
     // Performance settings
     performance: {
-        maxPositionsPerFrame: 6,    // Reduced for phones
+        maxPositionsPerFrame: 10,    // Reduced for phones
         contourSkipPixels: 1,        // Skip pixels for contour rendering (>=1 recommended on CPU)
         contourInterval: 0,          // Frames between contour overlay updates (increase to lighten CPU)
         debugUpdateInterval: 30,     // Update debug info every N frames
@@ -34,7 +34,7 @@ const BrushConfig = {
         
         // GPU acceleration settings
         useGPU: true,               // Enable GPU acceleration if available
-        gpuBatchSize: 6,         // Number of brush applications to batch for GPU
+        gpuBatchSize: 10,         // Number of brush applications to batch for GPU
         gpuFallback: true,          // Automatically fallback to CPU if GPU fails
         gpuSyncInterval: 1,     // Frames between GPU->CPU thermal sync (higher = less CPU but more latency)
         gpuMaskSyncInterval: 1,     // Frames between GPU->CPU max/persistent syncs
@@ -92,13 +92,22 @@ const BrushConfig = {
             alphaScale: 1.0
         },
 
+        // Square overlay configuration
+        squareOverlay: {
+            enabled: true,       // Toggle square overlay on/off
+            size: 300,           // Size in pixels
+            color: "#00ff00",    // Any CSS color (hex, rgb, named)
+            lineWidth: 4,        // Border thickness
+            alpha: 0.5           // Transparency (0 = fully transparent, 1 = opaque)
+        },
+
         // Particle effects for brush visualization
         particles: {
-            numPerPosition: 0.0001,                 // Average number of particles created per brush position (can be fractional)
+            numPerPosition: 5,                 // Average number of particles created per brush position (can be fractional)
             velocity: { min: 1, max: 5 },        // Velocity range (pixels per frame)
             fadeRate: 0.02,                      // Alpha decrease per frame
-            maxParticles: 250,                   // Maximum number of particles
-            size: 2,                             // Particle radius
+            maxParticles: 50,                   // Maximum number of particles
+            size: 3,                             // Particle radius
             colors: ['234,130,11', '141,76,12', '255,255,255'],  // RGB values for red, orange, white
             startAlpha: 1,                       // Starting alpha value
             recirculationFlow: -0.3               // Y acceleration (pixels per frame squared)
@@ -127,7 +136,7 @@ const BrushConfig = {
             grayStep: 5        // quantize gray to reduce cache size
         },
         // Fully GPU-rendered top-layer (point sprites). Overrides sprite path when on.
-        renderTopOnGPU: false,
+        renderTopOnGPU: true,
         // Visual controls for background rendering
         visual: {
             // Static (baked) circle layer
@@ -181,8 +190,8 @@ const BrushConfig = {
     
     // Debug settings
     debug: {
-        enabled: true,
-        logInputPositions: true
+        enabled: false,
+        logInputPositions: false
 
     }
 };

@@ -17,6 +17,7 @@
 
       // Config
   const bgCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.background) ? BrushConfig.background : {};
+  this._bgCfg = bgCfg;
   this.pushRadius = options.pushRadius ?? bgCfg.pushRadius ?? 100;
   this.bgCircleCount = options.bgCircleCount ?? bgCfg.bgCircleCount ?? 20000; // static layer count
   this.topCircleCount = options.topCircleCount ?? bgCfg.topCircleCount ?? 500;  // animated layer count
@@ -100,145 +101,157 @@
   this._lastBrushPos = null;
   this.brushPositions = [];
   // Contour overlay (offscreen canvas)
-// ...existing code...
-    // in the constructor near contour canvas init
-    this._contourCanvas = document.createElement('canvas');
-    this._contourCanvas.width = this.width;
-    this._contourCanvas.height = this.height;
-    this._contourCtx = this._contourCanvas.getContext('2d');
-   this._contourImageData = this._contourCtx.createImageData(this.width, this.height);
-   //initialise normalisation cache _prepareContourConfig
-   this._contourCache = null;
-   this._prepareContourConfig(bgCfg.contour);
+  this._contourCanvas = document.createElement('canvas');
+  this._contourCanvas.width = this.width;
+  this._contourCanvas.height = this.height;
+  this._contourCtx = this._contourCanvas.getContext('2d');
+  this._contourImageData = this._contourCtx.createImageData(this.width, this.height);
+  this._contourCache = null;
+  this._prepareContourConfig(bgCfg.contour);
 
+  // Square overlay (offscreen canvas)
+  this._squareOverlayCanvas = document.createElement('canvas');
+  this._squareOverlayCanvas.width = this.width;
+  this._squareOverlayCanvas.height = this.height;
+  this._squareOverlayCtx = this._squareOverlayCanvas.getContext('2d');
+  // Configurable via BrushConfig.visual.squareOverlay
+  const sqCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.squareOverlay) ? BrushConfig.visual.squareOverlay : {};
+  this.squareOverlaySize = sqCfg.size ?? Math.floor(Math.min(this.width, this.height) * 0.5);
+  this.squareOverlayColor = sqCfg.color ?? 'red';
+  this.squareOverlayLineWidth = sqCfg.lineWidth ?? 2;
+  this.squareOverlayAlpha = sqCfg.alpha ?? 1.0;
+  this._drawSquareOverlay();
 
-// ...existing code...
-  // Sprite caches for prerendered top-layer circles
-  this._spritesCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.background?.sprites) ? BrushConfig.background.sprites : { enabled: true, radiusStep: 0.5, grayStep: 5 };
-  this._spriteCacheTopShadow = new Map(); // key: radiusQ|outerScale|shadow params
-  this._spriteCacheTopMain = new Map();   // key: radiusQ|grayQ|darkScale|hl
-
-      // FPS
-      this._fps = 0;
-      this._frameCount = 0;
-      this._lastTime = performance.now();
-      this._raf = null;
-      this._drawBackground();
-      if (this.shouldAnimate) this.start();
+      // Generate static background
+      this._generateStaticBackground();
     }
 
-    toDataURL(type = 'image/png', quality) {
-      // Render one frame and export as image
-      this._renderFrame();
-      return this.canvas.toDataURL(type, quality);
-    }
-
-    // Internals
-    _attachMouse() {
-      // Listen on document so we still track mouse when another canvas overlays this one
-      document.addEventListener('mousemove', (e) => {
-        // Only handle mouse movement when pointer is pressed (ignore hover)
-        if (!this._pointerDown && (e.buttons === 0)) return;
-
-        const rect = this.canvas.getBoundingClientRect();
-        // Update local interaction coordinates for visuals only
-        this.mouseX = e.clientX - rect.left;
-        this.mouseY = e.clientY - rect.top;
-        // Do NOT forward these positions to ThermalBrush here. ThermalBrush
-        // will call `window.bg.onBrushPosition(pos)` with brush-driven positions.
-      });
-
-      document.addEventListener('mouseleave', () => {
-        this._lastUserPos = null;
-      });
-
-      // Pointer down/up to track pressed state (covers mouse/touch/pen)
-      document.addEventListener('pointerdown', (e) => {
-        this._pointerDown = true;
-      });
-      document.addEventListener('pointerup', (e) => {
-        this._pointerDown = false;
-      });
-      document.addEventListener('pointercancel', (e) => {
-        this._pointerDown = false;
-      });
-    }
-
-    _initTopLayer() {
-      for (let i = 0; i < this.topCircleCount; i++) {
-        // Spawn uniformly within region
-        let x, y;
-        if (this._region.kind === 'rect') {
-          x = this._region.cx + (Math.random() * 2 - 1) * this._region.halfW;
-          y = this._region.cy + (Math.random() * 2 - 1) * this._region.halfH;
-        } else {
-          // random point in circle
-          const t = 2 * Math.PI * Math.random();
-          const r = this._region.r * Math.sqrt(Math.random());
-          x = this._region.cx + r * Math.cos(t);
-          y = this._region.cy + r * Math.sin(t);
-        }
-        const rMin = this.vTop.radiusMin ?? 3;
-        const rMax = this.vTop.radiusMax ?? 8;
-        const radius = Math.random() * (rMax - rMin) + rMin;
-        const outerScale = this.vTop.outerScale ?? 1.3;
-        const outerRadius = radius * outerScale;
-        const gMin = this.vTop.grayMin ?? 150;
-        const gMax = this.vTop.grayMax ?? 300; // browser clamps >255
-        const grayRaw = Math.random() * (gMax - gMin) + gMin;
-        const grayValue = Math.floor(Math.min(255, Math.max(0, grayRaw)));
-        this.topLayerCircles.push({ x, y, radius, outerRadius, grayValue });
-      }
-    }
-
-    _drawBackground() {
-      const ctx = this.ctx;
-
-      // Base fill
-  ctx.fillStyle = this.baseColor;
+    _generateStaticBackground() {
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.canvas.width = this.width;
+      ctx.canvas.height = this.height;
+      ctx.fillStyle = this.baseColor;
       ctx.fillRect(0, 0, this.width, this.height);
 
-      // Random circles (static baked layer)
+      const vStatic = this.vStatic;
+      const radiusMin = vStatic.radiusMin ?? 3;
+      const radiusMax = vStatic.radiusMax ?? 5;
+      const outerScale = vStatic.outerScale ?? 1.1;
+      const grayMin = vStatic.grayMin ?? 100;
+      const grayMax = vStatic.grayMax ?? 200;
+      const highlightOffsetScale = vStatic.highlightOffsetScale ?? 0.3;
+      const mainDarkScale = vStatic.mainDarkScale ?? 0.2;
+      const shadowOffset = vStatic.shadowOffset ?? 5;
+      const shadowAlphaInner = vStatic.shadowAlphaInner ?? 0.5;
+      const shadowAlphaOuter = vStatic.shadowAlphaOuter ?? 0.1;
+
       for (let i = 0; i < this.bgCircleCount; i++) {
         const x = Math.random() * this.width;
         const y = Math.random() * this.height;
-        const rMin = this.vStatic.radiusMin ?? 3;
-        const rMax = this.vStatic.radiusMax ?? 8;
-        const radius = Math.random() * (rMax - rMin) + rMin;
-        const outerScale = this.vStatic.outerScale ?? 1.3;
+        const radius = radiusMin + Math.random() * (radiusMax - radiusMin);
         const outerRadius = radius * outerScale;
+        const grayValue = grayMin + Math.random() * (grayMax - grayMin);
 
         // Shadow
-  const sOff = this.vStatic.shadowOffset ?? 5;
-  const sIn = this.vStatic.shadowAlphaInner ?? 0.5;
-  const sOut = this.vStatic.shadowAlphaOuter ?? 0.1;
-  const shadowGradient = ctx.createRadialGradient(x + sOff, y + sOff, 0, x + sOff, y + sOff, outerRadius);
-  shadowGradient.addColorStop(0, `rgba(0, 0, 0, ${sIn})`);
-  shadowGradient.addColorStop(1, `rgba(0, 0, 0, ${sOut})`);
+        const shadowGradient = ctx.createRadialGradient(x + shadowOffset, y + shadowOffset, 0, x + shadowOffset, y + shadowOffset, outerRadius);
+        shadowGradient.addColorStop(0, `rgba(0, 0, 0, ${shadowAlphaInner})`);
+        shadowGradient.addColorStop(1, `rgba(0, 0, 0, ${shadowAlphaOuter})`);
         ctx.beginPath();
-  ctx.arc(x - sOff, y - sOff, outerRadius, 0, Math.PI * 2);
+        ctx.arc(x - shadowOffset, y - shadowOffset, outerRadius, 0, Math.PI * 2);
         ctx.fillStyle = shadowGradient;
         ctx.fill();
 
         // Main circle
-        const hl = this.vStatic.highlightOffsetScale ?? 0.3;
-        const offsetX = x - radius * hl;
-        const offsetY = y - radius * hl;
-        const gradient = ctx.createRadialGradient(offsetX, offsetY, 0, x, y, radius);
-        const gMin = this.vStatic.grayMin ?? 100;
-        const gMax = this.vStatic.grayMax ?? 200;
-        const grayValue = Math.floor(Math.random() * (gMax - gMin) + gMin);
-        const darkScale = this.vStatic.mainDarkScale ?? 0.2;
+        const lightOffsetX = x - radius * highlightOffsetScale;
+        const lightOffsetY = y - radius * highlightOffsetScale;
+        const gradient = ctx.createRadialGradient(lightOffsetX, lightOffsetY, 0, x, y, radius);
         gradient.addColorStop(0, `rgb(${grayValue}, ${grayValue}, ${grayValue})`);
-        gradient.addColorStop(1, `rgb(${Math.floor(grayValue * darkScale)}, ${Math.floor(grayValue * darkScale)}, ${Math.floor(grayValue * darkScale)})`);
+        const dark = Math.floor(grayValue * mainDarkScale);
+        gradient.addColorStop(1, `rgb(${dark}, ${dark}, ${dark})`);
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fillStyle = gradient;
         ctx.fill();
       }
 
-      // Cache for fast restore
       this.backgroundImageData = ctx.getImageData(0, 0, this.width, this.height);
+
+      // Initialize top layer circles
+      this._initTopLayer();
+
+      // FPS tracking
+      this._fps = 0;
+      this._frameCount = 0;
+      this._lastTime = performance.now();
+      this._raf = null;
+
+      // Sprite caches
+      this._spriteCacheTopShadow = new Map();
+      this._spriteCacheTopMain = new Map();
+    }
+
+    _initTopLayer() {
+      this.topLayerCircles = [];
+      const vTop = this.vTop;
+      const radiusMin = vTop.radiusMin ?? 3;
+      const radiusMax = vTop.radiusMax ?? 5;
+      const grayMin = vTop.grayMin ?? 150;
+      const grayMax = vTop.grayMax ?? 300;
+
+      for (let i = 0; i < this.topCircleCount; i++) {
+        let x, y;
+        do {
+          x = Math.random() * this.width;
+          y = Math.random() * this.height;
+        } while (!this._inRegion(x, y));
+
+        const radius = radiusMin + Math.random() * (radiusMax - radiusMin);
+        const outerRadius = radius * (vTop.outerScale ?? 1.1);
+        const grayValue = Math.min(255, grayMin + Math.random() * (grayMax - grayMin));
+
+        this.topLayerCircles.push({
+          x, y, radius, outerRadius, grayValue
+        });
+      }
+
+      // GPU particles setup
+      this._gpuParticlesDesired = this._spritesCfg?.enabled ? false : (this._bgCfg.useGpuParticles ?? true);
+      this._gpuParticlesEnabled = false;
+      this._renderTopOnGPU = this._bgCfg.renderTopOnGPU ?? true;
+      this._gpuParticleSyncInterval = this._bgCfg.gpuParticleSyncInterval ?? 1;
+      this._gpuParticleFrame = 0;
+      this._spritesCfg = this._bgCfg.sprites || {};
+    }
+
+    // Draw the square overlay outline
+    _drawSquareOverlay() {
+      const ctx = this._squareOverlayCtx;
+      ctx.clearRect(0, 0, this.width, this.height); // transparent background
+      ctx.save();
+      // Use RGBA for color if alpha < 1
+      let color = this.squareOverlayColor;
+      if (this.squareOverlayAlpha < 1.0) {
+        // If color is a hex or named color, convert to rgba
+        // Simple hex (#rrggbb or #rgb) support
+        if (/^#([A-Fa-f0-9]{3}){1,2}$/.test(color)) {
+          let c = color.substring(1);
+          if (c.length === 3) c = c.split('').map(x => x + x).join('');
+          const r = parseInt(c.substring(0,2),16);
+          const g = parseInt(c.substring(2,4),16);
+          const b = parseInt(c.substring(4,6),16);
+          color = `rgba(${r},${g},${b},${this.squareOverlayAlpha})`;
+        } else if (!color.startsWith('rgba')) {
+          // fallback for named colors
+          color = `rgba(255,0,0,${this.squareOverlayAlpha})`; // fallback to red
+        }
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = this.squareOverlayLineWidth;
+      const size = this.squareOverlaySize;
+      const x = (this.width - size) / 2;
+      const y = (this.height - size) / 2;
+      ctx.strokeRect(x, y, size, size);
+      ctx.restore();
     }
 
     _drawTopLayer() {
@@ -466,8 +479,12 @@
       if (this._contourCanvas) {
         ctx.drawImage(this._contourCanvas, 0, 0);
       }
-
-      // Then draw top layer particles on top of contour
+      // Draw square overlay only if enabled in config
+      const sqCfg = (typeof BrushConfig !== 'undefined' && BrushConfig.visual?.squareOverlay) ? BrushConfig.visual.squareOverlay : {};
+      if (this._squareOverlayCanvas && sqCfg.enabled) {
+        ctx.drawImage(this._squareOverlayCanvas, 0, 0);
+      }
+      // Then draw top layer particles on top of overlays
       if (this._renderTopOnGPU && this._gpuParticlesEnabled && this._gpu && this._gpu.supported) {
         // Ensure GPU canvas is sized
         if (!this._gpuCanvasLayer) {
