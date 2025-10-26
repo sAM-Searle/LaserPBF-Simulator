@@ -1,11 +1,20 @@
 // GPU-accelerated thermal simulation using WebGL2 compute shaders
 class GPUCompute {
-    constructor(width, height) {
+    constructor(width, height, maxBrushBatchSize = 8) {
         this.width = width;
         this.height = height;
         this.canvas = document.createElement('canvas');
         this.supported = false;
-        
+        const requestedBatch = Number.isFinite(maxBrushBatchSize) ? Math.floor(maxBrushBatchSize) : 0;
+        this.maxBrushBatchSize = Math.max(1, requestedBatch || 8);
+        this._currentProgram = null;
+        this._brushDataBuffer = new Float32Array(this.maxBrushBatchSize * 4);
+        this._uploadScratch = null;
+        this._downloadScratch = null;
+        this._persistentDownloadScratch = null;
+        this._thermalResultBuffer = null;
+        this._persistentResultBuffer = null;
+
         try {
             this.gl = this.canvas.getContext('webgl2');
             
@@ -122,35 +131,42 @@ class GPUCompute {
         `);
         
         // Brush application shader
+        const maxBatch = this.maxBrushBatchSize;
         const brushFragShader = this.createShader(gl.FRAGMENT_SHADER, `#version 300 es
             precision mediump float;
+            #define MAX_BRUSH_BATCH ${maxBatch}
             uniform sampler2D u_thermalData;
-            uniform vec2 u_brushPos;
-            uniform float u_brushRadius;
-            uniform float u_brushIntensity;
-            uniform float u_centerMultiplier;
             uniform vec2 u_resolution;
+            uniform float u_centerMultiplier;
+            uniform int u_brushCount;
+            uniform vec4 u_brushData[MAX_BRUSH_BATCH];
             in vec2 v_texCoord;
             out vec4 outColor;
-            
+
             void main() {
                 vec2 pixelPos = v_texCoord * u_resolution;
-                float dist = distance(pixelPos, u_brushPos);
-                
                 float currentValue = texture(u_thermalData, v_texCoord).r;
-                float brushValue = 0.0;
-                
-                if (dist <= u_brushRadius) {
-                    float intensity = 1.0 - (dist / u_brushRadius);
-                    brushValue = intensity * u_brushIntensity;
-                    
-                    // Center boost
-                    if (dist < 1.0) {
-                        brushValue += u_brushIntensity * u_centerMultiplier;
+                float brushContribution = 0.0;
+
+                for (int i = 0; i < MAX_BRUSH_BATCH; ++i) {
+                    if (i >= u_brushCount) {
+                        break;
+                    }
+
+                    vec4 brush = u_brushData[i];
+                    float radius = max(brush.z, 1.0);
+                    float dist = distance(pixelPos, brush.xy);
+
+                    if (dist <= radius) {
+                        float base = (1.0 - dist / radius) * brush.w;
+                        brushContribution += base;
+                        if (dist < 1.0) {
+                            brushContribution += brush.w * u_centerMultiplier;
+                        }
                     }
                 }
-                
-                outColor = vec4(currentValue + brushValue, 0.0, 0.0, 1.0);
+
+                outColor = vec4(currentValue + brushContribution, 0.0, 0.0, 1.0);
             }
         `);
         
@@ -441,11 +457,10 @@ class GPUCompute {
         gl.useProgram(this.brushProgram);
         this.brushUniforms = {
             thermalData: gl.getUniformLocation(this.brushProgram, 'u_thermalData'),
-            brushPos: gl.getUniformLocation(this.brushProgram, 'u_brushPos'),
-            brushRadius: gl.getUniformLocation(this.brushProgram, 'u_brushRadius'),
-            brushIntensity: gl.getUniformLocation(this.brushProgram, 'u_brushIntensity'),
+            resolution: gl.getUniformLocation(this.brushProgram, 'u_resolution'),
             centerMultiplier: gl.getUniformLocation(this.brushProgram, 'u_centerMultiplier'),
-            resolution: gl.getUniformLocation(this.brushProgram, 'u_resolution')
+            brushCount: gl.getUniformLocation(this.brushProgram, 'u_brushCount'),
+            brushData: gl.getUniformLocation(this.brushProgram, 'u_brushData[0]')
         };
         
         // Blur uniforms
@@ -529,6 +544,8 @@ class GPUCompute {
                 count: gl.getUniformLocation(this.particleRenderProgram, 'u_count')
             };
         }
+
+        this._currentProgram = null;
     }
     
     setupGeometry() {
@@ -573,46 +590,77 @@ class GPUCompute {
     gl.attachShader(program, vertexShader);
     gl.attachShader(program, fragmentShader);
         gl.linkProgram(program);
-        
+
         if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
             console.error('Program link error:', gl.getProgramInfoLog(program));
             gl.deleteProgram(program);
             return null;
         }
-        
+
         return program;
     }
-    
+
+    bindProgram(program) {
+        if (!this.gl || this._currentProgram === program) return;
+        this.gl.useProgram(program);
+        this._currentProgram = program;
+    }
+
     // GPU operations
-    applyBrush(x, y, config) {
+    applyBrush(x, y, config = {}) {
         if (!this.supported || !this.gl) return;
-        
+
+        const brushConfig = {
+            x,
+            y,
+            radius: (typeof config.brushRadius === 'number') ? config.brushRadius : 0,
+            intensity: (typeof config.brushIntensity === 'number') ? config.brushIntensity : 0
+        };
+
+        return this.applyBrushBatch([brushConfig], {
+            centerMultiplier: (config && typeof config.centerMultiplier === 'number') ? config.centerMultiplier : 1.0
+        });
+    }
+
+    applyBrushBatch(brushes, options = {}) {
+        if (!this.supported || !this.gl || !Array.isArray(brushes) || brushes.length === 0) return;
+
         const gl = this.gl;
-        gl.useProgram(this.brushProgram);
+        const count = Math.min(brushes.length, this.maxBrushBatchSize);
+        if (brushes.length > this.maxBrushBatchSize) {
+            console.warn(`applyBrushBatch received ${brushes.length} brushes, truncating to ${this.maxBrushBatchSize}.`);
+        }
+
+        this.bindProgram(this.brushProgram);
         gl.bindVertexArray(this.vao);
-        
-        // Set uniforms
+
         gl.uniform1i(this.brushUniforms.thermalData, 0);
-        gl.uniform2f(this.brushUniforms.brushPos, x, y);
-        gl.uniform1f(this.brushUniforms.brushRadius, config.brushRadius);
-        gl.uniform1f(this.brushUniforms.brushIntensity, config.brushIntensity);
-    const cm = (config && typeof config.centerMultiplier === 'number') ? config.centerMultiplier : 1.0;
-    gl.uniform1f(this.brushUniforms.centerMultiplier, cm);
         gl.uniform2f(this.brushUniforms.resolution, this.width, this.height);
-        
-        // Bind input texture
+        const centerMultiplier = (typeof options.centerMultiplier === 'number') ? options.centerMultiplier : 1.0;
+        gl.uniform1f(this.brushUniforms.centerMultiplier, centerMultiplier);
+        gl.uniform1i(this.brushUniforms.brushCount, count);
+
+        const data = this._brushDataBuffer;
+        for (let i = 0; i < count; i++) {
+            const brush = brushes[i];
+            const offset = i * 4;
+            data[offset] = (typeof brush.x === 'number') ? brush.x : 0;
+            data[offset + 1] = (typeof brush.y === 'number') ? brush.y : 0;
+            data[offset + 2] = (typeof brush.radius === 'number') ? brush.radius : 0;
+            data[offset + 3] = (typeof brush.intensity === 'number') ? brush.intensity : 0;
+        }
+        gl.uniform4fv(this.brushUniforms.brushData, data.subarray(0, count * 4));
+
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.thermalTexA);
-        
-        // Render to output texture
+
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbB);
         gl.viewport(0, 0, this.width, this.height);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
-        
-        // Swap textures
+
         [this.thermalTexA, this.thermalTexB] = [this.thermalTexB, this.thermalTexA];
         [this.fbA, this.fbB] = [this.fbB, this.fbA];
-        
+
         return true;
     }
     
@@ -620,7 +668,7 @@ class GPUCompute {
         if (!this.supported) return false;
         
         const gl = this.gl;
-        gl.useProgram(this.blurProgram);
+        this.bindProgram(this.blurProgram);
         gl.bindVertexArray(this.vao);
         
         // Horizontal pass
@@ -648,7 +696,7 @@ class GPUCompute {
         if (!this.supported) return false;
         
         const gl = this.gl;
-        gl.useProgram(this.decayProgram);
+        this.bindProgram(this.decayProgram);
         gl.bindVertexArray(this.vao);
         
         gl.uniform1i(this.decayUniforms.thermalData, 0);
@@ -676,7 +724,7 @@ class GPUCompute {
         if (!this.supported) return false;
         
         const gl = this.gl;
-        gl.useProgram(this.persistentProgram);
+        this.bindProgram(this.persistentProgram);
         gl.bindVertexArray(this.vao);
         
         gl.uniform1i(this.persistentUniforms.thermalData, 0);
@@ -705,14 +753,19 @@ class GPUCompute {
         try {
             const gl = this.gl;
             // Convert to RGBA format
-            const rgbaData = new Float32Array(this.width * this.height * 4);
-            for (let i = 0; i < data.length; i++) {
-                rgbaData[i * 4] = data[i]; // R
-                rgbaData[i * 4 + 1] = 0.0; // G
-                rgbaData[i * 4 + 2] = 0.0; // B
-                rgbaData[i * 4 + 3] = 1.0; // A
+            const totalPixels = this.width * this.height;
+            if (!this._uploadScratch || this._uploadScratch.length !== totalPixels * 4) {
+                this._uploadScratch = new Float32Array(totalPixels * 4);
             }
-            
+            const rgbaData = this._uploadScratch;
+            for (let i = 0; i < totalPixels; i++) {
+                const base = i * 4;
+                rgbaData[base] = data[i];
+                rgbaData[base + 1] = 0.0;
+                rgbaData[base + 2] = 0.0;
+                rgbaData[base + 3] = 1.0;
+            }
+
             gl.bindTexture(gl.TEXTURE_2D, this.thermalTexA);
             gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, rgbaData);
         } catch (error) {
@@ -725,17 +778,23 @@ class GPUCompute {
         
         try {
             const gl = this.gl;
-            const data = new Float32Array(this.width * this.height * 4);
-            
-            gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbA);
-            gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, data);
-            
-            // Extract R channel
-            const result = new Float32Array(this.width * this.height);
-            for (let i = 0; i < result.length; i++) {
-                result[i] = data[i * 4];
+            const totalPixels = this.width * this.height;
+            if (!this._downloadScratch || this._downloadScratch.length !== totalPixels * 4) {
+                this._downloadScratch = new Float32Array(totalPixels * 4);
             }
-            
+            if (!this._thermalResultBuffer || this._thermalResultBuffer.length !== totalPixels) {
+                this._thermalResultBuffer = new Float32Array(totalPixels);
+            }
+
+            const scratch = this._downloadScratch;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbA);
+            gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.FLOAT, scratch);
+
+            const result = this._thermalResultBuffer;
+            for (let i = 0; i < totalPixels; i++) {
+                result[i] = scratch[i * 4];
+            }
+
             return result;
         } catch (error) {
             console.warn('GPU thermal data download failed:', error);
@@ -752,17 +811,24 @@ class GPUCompute {
         if (!this.supported) return null;
         
         const gl = this.gl;
-        const data = new Uint8Array(this.width * this.height * 4);
-        
-        gl.bindFramebuffer(gl.FRAMEBUFFER, this.persistentFbA);
-        gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
-        
-        // Extract R channel
-        const result = new Uint8Array(this.width * this.height);
-        for (let i = 0; i < result.length; i++) {
-            result[i] = data[i * 4];
+        const totalPixels = this.width * this.height;
+        if (!this._persistentDownloadScratch || this._persistentDownloadScratch.length !== totalPixels * 4) {
+            this._persistentDownloadScratch = new Uint8Array(totalPixels * 4);
         }
-        
+        const scratch = this._persistentDownloadScratch;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.persistentFbA);
+        gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+
+        if (!this._persistentResultBuffer || this._persistentResultBuffer.length !== totalPixels) {
+            this._persistentResultBuffer = new Uint8Array(totalPixels);
+        }
+
+        const result = this._persistentResultBuffer;
+        for (let i = 0; i < totalPixels; i++) {
+            result[i] = scratch[i * 4];
+        }
+
         return result;
     }
     

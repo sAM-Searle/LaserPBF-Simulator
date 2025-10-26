@@ -104,15 +104,18 @@ class ThermalBrush {
         this.useGPU = false;
         this.gpuCompute = null;
         this.brushBatch = [];
-        
+        this.maxBatchSize = Math.max(1, BrushConfig.performance?.gpuBatchSize || 8);
+        this._gpuBrushScratch = null;
+
         // Try GPU initialization if enabled
         if (BrushConfig.performance?.useGPU !== false) {
             try {
                 if (typeof GPUCompute !== 'undefined') {
-                    this.gpuCompute = new GPUCompute(this.width, this.height);
+                    const requestedBatch = BrushConfig.performance?.gpuBatchSize;
+                    this.gpuCompute = new GPUCompute(this.width, this.height, requestedBatch);
                     if (this.gpuCompute && this.gpuCompute.supported) {
                         this.useGPU = true;
-                        this.maxBatchSize = BrushConfig.performance?.gpuBatchSize || 8;
+                        this.maxBatchSize = this.gpuCompute.maxBrushBatchSize;
                     }
                 }
             } catch (error) {
@@ -603,19 +606,37 @@ class ThermalBrush {
     
     flushBrushBatch() {
         if (!this.useGPU || !this.gpuCompute || this.brushBatch.length === 0) return;
-        
+
         try {
-            // Process all batched brush applications
-            for (const brush of this.brushBatch) {
-                // Determine radius from variant if present
-                const variantIdx = (typeof brush.variant === 'number') ? Math.max(0, Math.min(this.brushVariants.length - 1, brush.variant)) : 0;
-                const variantRadius = this.brushVariantRadii[variantIdx] || this.brushRadius;
-                this.gpuCompute.applyBrush(brush.x, brush.y, {
-                    brushRadius: variantRadius,
-                    brushIntensity: this.brushIntensity,
-                    centerMultiplier: this.centerMultiplier,
-                    variantIndex: variantIdx
-                });
+            const chunkSize = this.gpuCompute.maxBrushBatchSize || this.maxBatchSize;
+            if (!this._gpuBrushScratch || this._gpuBrushScratch.length !== chunkSize) {
+                this._gpuBrushScratch = Array.from({ length: chunkSize }, () => ({ x: 0, y: 0, radius: 0, intensity: 0 }));
+            }
+            const scratch = this._gpuBrushScratch;
+
+            for (let start = 0; start < this.brushBatch.length; start += chunkSize) {
+                const end = Math.min(start + chunkSize, this.brushBatch.length);
+                let writeIdx = 0;
+                for (let i = start; i < end; i++) {
+                    const brush = this.brushBatch[i];
+                    const variantIdx = (typeof brush.variant === 'number') ? Math.max(0, Math.min(this.brushVariants.length - 1, brush.variant)) : 0;
+                    const variant = this.brushVariants[variantIdx] || this.brush;
+                    const radius = this.brushVariantRadii[variantIdx] || this.brushRadius;
+                    const decayScale = (variant && typeof variant.decayScale === 'number') ? variant.decayScale : 1.0;
+                    const entry = scratch[writeIdx];
+                    entry.x = Math.max(0, Math.min(this.width - 1, brush.x));
+                    entry.y = Math.max(0, Math.min(this.height - 1, brush.y));
+                    entry.radius = radius;
+                    entry.intensity = this.brushIntensity * decayScale;
+                    writeIdx++;
+                }
+
+                const originalLength = scratch.length;
+                scratch.length = writeIdx;
+                if (writeIdx > 0) {
+                    this.gpuCompute.applyBrushBatch(scratch, { centerMultiplier: this.centerMultiplier });
+                }
+                scratch.length = originalLength;
             }
         } catch (error) {
             console.warn('GPU batch flush failed, falling back to CPU:', error);
